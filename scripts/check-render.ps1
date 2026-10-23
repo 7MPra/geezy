@@ -56,7 +56,7 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    for($i=0;$i -lt 16;$i++) {
+    for($i=0;$i -lt 26;$i++) {
         $r=New-Object GeezyCapture+Rect
         [GeezyCapture]::GetClientRect($window,[ref]$r) | Out-Null
         $bitmap=New-Object System.Drawing.Bitmap $r.right,$r.bottom
