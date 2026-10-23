@@ -81,28 +81,22 @@ static void ortho(void) {
     guOrtho(p,1,-1,-1,1,0,10); GX_LoadProjectionMtx(p,GX_ORTHOGRAPHIC);
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
 }
-static void feedback_slits(void) {
+static void feedback_echo(void) {
     ortho(); material(&history);
-    float zoom=1.03f+0.05f*synth.charge;
-    float angle=(synth.flow.x<0?-1:1)*(0.035f+0.035f*synth.charge);
-    for(int strip=0;strip<3;strip++) {
-        float start=-0.85f+strip*0.6f;
-        float width=0.10f+0.14f*synth.charge;
-        GX_Begin(GX_QUADS,GX_VTXFMT0,4);
-        for(int i=0;i<4;i++) {
-            float x=(i==0||i==3)?-1:1,y=(i<2)?start:start+width;
-            if(synth.cut&1) { float temp=x; x=y; y=temp; }
-            float u=0.5f+(x*cosf(angle)-y*sinf(angle))/(2*zoom)+synth.flow.x*0.013f;
-            float v=0.5f-(x*sinf(angle)+y*cosf(angle))/(2*zoom)+0.009f+synth.flow.y*0.013f;
-            vertex((Vec){x,y,-1},u,v,255,255);
-        }
-        GX_End();
+    float angle=synth.draw.phase*0.02f;
+    GX_Begin(GX_QUADS,GX_VTXFMT0,4);
+    for(int i=0;i<4;i++) {
+        float x=(i==0||i==3)?-1:1,y=i<2?1:-1;
+        float u=0.5f+(x*cosf(angle)-y*sinf(angle))/2.06f;
+        float v=0.5f-(x*sinf(angle)+y*cosf(angle))/2.06f;
+        vertex((Vec){x,y,-1},u,v,48,255);
     }
+    GX_End();
 }
 static void projection(void) {
     Mtx44 p;
     guPerspective(p,synth.draw.fov,aspect,0.2f,180);
-    // Off-axis projection gives hard framing changes without a slow orbit.
+    // Projection offsets follow the same eased pose as FOV and roll.
     p[0][2]+=synth.draw.aim_x; p[1][2]+=synth.draw.aim_y;
     GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
     Mtx m; guVector axis={0,0,1}; guMtxRotAxisDeg(m,&axis,synth.draw.roll);
@@ -117,13 +111,16 @@ static Vec dome_point(int row,int col) {
 static void dome(void) {
     projection(); material(&metal); GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
     for(int row=0;row<8;row++) for(int col=0;col<16;col++) {
+        if((row+col)%8!=0) continue;
         Vec p[4]={dome_point(row,col),dome_point(row+1,col),dome_point(row+1,col+1),dome_point(row,col+1)};
-        GX_Begin(GX_QUADS,GX_VTXFMT0,4);
-        for(int i=0;i<4;i++) {
+        GX_SetLineWidth(6,GX_TO_ZERO);
+        GX_Begin(GX_LINESTRIP,GX_VTXFMT0,5);
+        for(int j=0;j<5;j++) {
+            int i=j%4;
             float len=sqrtf(p[i].x*p[i].x+p[i].y*p[i].y+p[i].z*p[i].z);
             // Inward radial normals: the viewer is inside this environment shell.
             vertex(p[i],0.5f-p[i].x/len*0.85f+synth.draw.uv_shift,
-                   0.5f+p[i].y/len*0.85f+synth.draw.uv_shift,(row+col+synth.cut)%3==0?0:255,255);
+                   0.5f+p[i].y/len*0.85f+synth.draw.uv_shift,255,255);
         }
         GX_End();
     }
@@ -174,15 +171,6 @@ static void swarm(void) {
         triangle(add(center,p),add(center,q),add(center,r),i%3==0?0:255);
     }
 }
-static void slasher(void) {
-    if(synth.draw.burst<0.12f) return;
-    Mtx m; Mtx44 p;
-    guMtxIdentity(m); GX_LoadPosMtxImm(m,GX_PNMTX0);
-    guPerspective(p,synth.draw.fov,aspect,0.2f,180); GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
-    float h=tanf(synth.draw.fov*0.008726646f)*0.26f,w=h*aspect;
-    float side=(synth.cut&1)?-1:1;
-    quad((Vec){-w,-h,-0.26f},(Vec){w,-h,-0.26f},(Vec){w,side*h*0.6f,-0.26f},(Vec){-w,-side*h*0.6f,-0.26f},synth.cut%3==0?0:255);
-}
 static void mask_rect(float x,float y,float w,float h) {
     GX_Begin(GX_QUADS,GX_VTXFMT0,4);
     vertex((Vec){x,y,-1},0,0,255,255); vertex((Vec){x+w,y,-1},1,0,255,255);
@@ -193,16 +181,28 @@ static void overlay(int held) {
     if(!held&&!synth.flash_ticks) return;
     ortho(); material(&metal); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
     GX_SetBlendMode(GX_BM_LOGIC,GX_BL_ONE,GX_BL_ZERO,GX_LO_INV);
+    float t=synth.tick/60.0f,burst=fminf(synth.draw.burst,4);
+    float angle=0,scale=1,tx=0,ty=0;
+    if(synth.cut%4==1) { tx=fmodf(t*1.7f,0.5f); ty=fmodf(t*1.1f,0.5f); }
+    if(synth.cut%4==2) angle=-synth.draw.roll+synth.draw.phase*30;
+    if(synth.cut%4==3) { angle=synth.draw.phase*45; scale=0.6f+fmodf(t*1.8f,1.5f)+burst*0.12f; tx=wrap(t*2,3); }
+    Mtx m; guVector axis={0,0,1}; guMtxRotAxisDeg(m,&axis,angle);
+    guMtxScaleApply(m,m,scale,scale,1); guMtxTransApply(m,m,tx,ty,0);
+    GX_LoadPosMtxImm(m,GX_PNMTX0);
     switch(synth.cut%4) {
     case 0:
-        for(int i=0;i<4;i++) mask_rect(-1,-1+i*0.5f,2,0.25f);
+        for(int i=-1;i<6;i++) mask_rect(-1,-1+i*0.5f-fmodf(t*2,0.5f),2,0.16f+burst*0.025f);
         break;
     case 1:
-        for(int y=0;y<4;y++) for(int x=0;x<4;x++) if((x+y)%2==0) mask_rect(-1+x*0.5f,-1+y*0.5f,0.5f,0.5f);
+        for(int y=-1;y<5;y++) for(int x=-1;x<5;x++) if((x+y)%2==0) mask_rect(-1+x*0.5f,-1+y*0.5f,0.5f,0.5f);
         break;
-    case 2:
-        mask_rect(-1,-0.18f,2,0.36f); mask_rect(-0.18f,-1,0.36f,0.82f); mask_rect(-0.18f,0.18f,0.36f,0.82f);
+    case 2: {
+        float width=0.06f+burst*0.045f;
+        mask_rect(-2,-width,4,width*2);
+        mask_rect(-width,-2,width*2,2-width);
+        mask_rect(-width,width,width*2,2-width);
         break;
+    }
     default:
         GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
         vertex((Vec){-1,-1,-1},0,0,255,255); vertex((Vec){1,-1,-1},0,0,255,255); vertex((Vec){1,1,-1},0,0,255,255);
@@ -212,10 +212,10 @@ static void overlay(int held) {
 }
 static void render(int accent) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    if(history_valid && (accent || synth.draw.burst>0.4f)) feedback_echo();
     dome();
-    if(history_valid) feedback_slits();
     projection(); material(&metal); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    mega(); swarm(); slasher(); overlay(accent);
+    mega(); swarm(); overlay(accent);
 }
 
 int main(void) {
@@ -293,8 +293,8 @@ int main(void) {
             }
 #endif
             if(impulse && !shaken) hit(&synth,1);
-            if(down&WPAD_BUTTON_PLUS) { synth.live.fov=35; sample_pose(&synth); }
-            if(down&WPAD_BUTTON_MINUS) { synth.live.fov=135; sample_pose(&synth); }
+            if(down&WPAD_BUTTON_PLUS) synth.target_fov=55;
+            if(down&WPAD_BUTTON_MINUS) synth.target_fov=105;
         }
 #ifdef GEEZY_VISUAL_CHECK
         // Deterministic emulator walkthrough, without sending keys to the user's desktop.

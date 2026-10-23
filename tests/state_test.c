@@ -3,23 +3,32 @@
 static int closef(float a,float b) { return fabsf(a-b)<0.001f; }
 int main(void) {
     Synth s; reset(&s);
-    for(int i=0;i<3;i++) advance(&s,1.0f/60,0);
-    assert(s.draw.camera.z==0 && closef(s.live.camera.z,-6.75f));
+    for(int i=0;i<2;i++) advance(&s,1.0f/60,0);
+    assert(s.draw.camera.z==0 && closef(s.live.camera.z,-0.4f));
     advance(&s,1.0f/60,0);
-    assert(closef(s.draw.camera.z,-9) && s.draw.uv_shift>0 && s.draw.phase>0);
+    assert(closef(s.draw.camera.z,-0.6f));
     reset(&s);
-    for(int i=0;i<11;i++) advance(&s,1.0f/60,1);
-    assert(s.draw.camera.z==0 && closef(s.live.camera.z,-25.0f*11/60));
-    advance(&s,1.0f/60,1); assert(closef(s.draw.camera.z,-5));
+    for(int i=0;i<9;i++) advance(&s,1.0f/60,1);
+    assert(s.draw.camera.z==0 && closef(s.live.camera.z,-0.3f));
+    advance(&s,1.0f/60,1); assert(closef(s.draw.camera.z,-1.0f/3));
     reset(&s);
-    for(int i=0;i<19;i++) advance(&s,1.0f/60,0);
-    assert(s.velocity.z==0 && s.live.roll==0);
-    advance(&s,1.0f/60,0);
-    assert(s.velocity.z<0 && s.live.roll!=0 && s.draw.uv_shift==s.live.uv_shift);
+    for(int i=0;i<60;i++) advance(&s,1.0f/60,0);
+    assert(s.velocity.z==0 && s.spin_velocity==0 && s.live.roll==0);
+    assert(closef(s.live.camera.z,-12) && closef(s.live.phase,0.35f));
     Synth a,b; reset(&a); reset(&b); hit(&a,1); hit(&b,2.5f);
-    assert(closef(b.velocity.z,a.velocity.z*2.5f));
-    assert(closef(b.draw.camera.z,a.draw.camera.z*2.5f));
-    assert(closef(b.draw.burst,a.draw.burst*2.5f));
+    assert(a.live.camera.z==0 && a.draw.camera.z==0 && a.live.fov==80);
+    assert(a.live.roll==0 && a.live.aim_x==0 && a.live.burst==0);
+    assert(a.target_fov==105 && fabsf(a.target_aim_x)<=0.35f && fabsf(a.target_aim_y)<=0.35f);
+    assert(closef(a.velocity.z,-600) && closef(b.velocity.z,a.velocity.z*2.5f));
+    advance(&a,1.0f/60,0);
+    assert(a.live.fov>80 && a.live.fov<105 && a.draw.fov==80);
+    assert(closef(a.velocity.z,-510) && a.live.camera.z<-10);
+    float first=a.live.fov;
+    for(int i=0;i<19;i++) advance(&a,1.0f/60,0);
+    assert(a.live.fov>first && closef(a.live.fov,105-25*powf(0.72f,20)));
+    assert(fabsf(a.velocity.z)>20 && fabsf(a.velocity.z)<25);
+    reset(&a); a.live.roll=179; a.target_roll=-179;
+    advance(&a,1.0f/60,0); assert(a.live.roll>179 && a.live.roll<180);
     reset(&s);
     assert(!shake(&s,1) && !shake(&s,1.64f) && !shake(&s,NAN));
     assert(shake(&s,1.7f) && s.shake_cooldown==10);
@@ -44,6 +53,6 @@ int main(void) {
     reset(&s); palette_next(&s); assert(s.frequency==1);
     palette_next(&s); assert(s.frequency==2);
     palette_next(&s); assert(s.frequency==0);
-    reset(&s); assert(s.live.fov==95 && s.charge==0 && s.shape==0 && s.shake_cooldown==0);
+    reset(&s); assert(s.live.fov==80 && s.target_fov==80 && s.shape==0 && s.shake_cooldown==0);
     return 0;
 }
