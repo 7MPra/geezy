@@ -1,0 +1,8 @@
+/build/
+/*.dol
+/*.elf
+/apps/geezy/boot.dol
+/.dolphin/
+/.dolphin-prototype/
+/.dolphin-check/
+/artifacts/
