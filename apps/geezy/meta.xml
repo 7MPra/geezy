@@ -2,7 +2,7 @@
 <app version="1">
   <name>Geezy</name>
   <coder>Geezy</coder>
-  <version>0.3.0</version>
+  <version>0.4.0</version>
   <short_description>3D video synthesizer</short_description>
-  <long_description>Hold sideways. A: impulse / hold for 4 Hz motion and feedback accumulation. B: region inversion. 1: palette. 2: ring / cross / spike / ribbon space. D-pad: directional impulse and feedback twist. Plus: 35 degree telephoto. Minus: 135 degree wide angle. Plus and Minus together: reset. HOME: exit. No sensor bar required.</long_description>
+  <long_description>Hold sideways. A: impulse / hold for 5 Hz motion, slow cruise and wider feedback slits. Shake: 2.5x impulse. B: region inversion. 1: palette. 2: ring / cross / spike / ribbon space. D-pad: directional impulse and feedback twist. Plus: 35 degree telephoto. Minus: 135 degree wide angle. Plus and Minus together: reset. HOME: exit. No sensor bar required.</long_description>
 </app>

@@ -31,6 +31,17 @@ public static int BlackPixels(byte[] pixels) {
     int count=0;for(int i=0;i<pixels.Length;i+=4)if(pixels[i]==0 && pixels[i+1]==0 && pixels[i+2]==0)count++;
     return count;
 }
+public static int WhitePixels(byte[] pixels) {
+    int count=0;for(int i=0;i<pixels.Length;i+=4)if(pixels[i]>=252 && pixels[i+1]>=252 && pixels[i+2]>=252)count++;
+    return count;
+}
+public static int NeonPixels(byte[] pixels) {
+    int count=0;for(int i=0;i<pixels.Length;i+=4){
+        int lo=Math.Min(pixels[i],Math.Min(pixels[i+1],pixels[i+2]));
+        int hi=Math.Max(pixels[i],Math.Max(pixels[i+1],pixels[i+2]));
+        if(lo<=3 && hi>=252)count++;
+    }return count;
+}
 }
 "@
     $oldDpi=[GeezyCapture]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
@@ -61,13 +72,18 @@ public static int BlackPixels(byte[] pixels) {
         [Runtime.InteropServices.Marshal]::Copy($data.Scan0,$bytes,0,$bytes.Length)
         $bitmap.UnlockBits($data)
         $black=[GeezyCapture]::BlackPixels($bytes)
-        $results+=[pscustomobject]@{frame=$i;blackPixels=$black;file=$file}
+        $white=[GeezyCapture]::WhitePixels($bytes)
+        $neon=[GeezyCapture]::NeonPixels($bytes)
+        $mixed=$bytes.Length/4-$black-$white-$neon
+        $results+=[pscustomobject]@{frame=$i;blackPixels=$black;whitePixels=$white;neonPixels=$neon;mixedPixels=$mixed;hash=(Get-FileHash $file).Hash;file=$file}
         $graphics.Dispose();$bitmap.Dispose()
         Start-Sleep -Milliseconds 1000
     }
     $results | ConvertTo-Json | Set-Content artifacts/render-check.json
-    $results | Format-Table frame,blackPixels
-    if(($results | Where-Object blackPixels -gt 0).Count -gt 0){throw 'Black pixels found in render captures'}
+    $results | Format-Table frame,blackPixels,whitePixels,neonPixels,mixedPixels
+    if(($results | Where-Object mixedPixels -gt 0).Count -gt 0){throw 'Intermediate colors found in render captures'}
+    if(($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
+    if(($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
 } finally {
     if($process -and !$process.HasExited){Stop-Process -Id $process.Id}
     if($oldDpi){[GeezyCapture]::SetThreadDpiAwarenessContext($oldDpi) | Out-Null}

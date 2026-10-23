@@ -19,26 +19,22 @@ static void reset_button(u32 irq,void *ctx) { (void)irq; (void)ctx; quitting=1; 
 
 static void make_metal(void) {
     float phase=(synth.seed&65535)*0.000095875f;
-    int bands=2+(synth.seed%3);
+    int bands=4+2*(synth.seed%3);
+    float freq=(float[]){2.5f,6.0f,12.0f}[synth.frequency];
     for(int y=0;y<64;y++) for(int x=0;x<64;x++) {
         float u=(x-31.5f)/32,v=(y-31.5f)/32;
-        float light=0.5f+0.5f*cosf(2.6f*u+1.6f*v+2*sqrtf(fmaxf(0,1-u*u-v*v)));
+        float light=0.5f+0.5f*cosf(freq*(u+0.62f*v+0.77f*sqrtf(fmaxf(0,1-u*u-v*v))));
         int band=(int)(light*(bands-0.001f));
         int r,g,b;
-        // Keep black/white headroom so destination inversion cannot create black holes.
-        if(band==0) { r=20; g=24; b=32; }
-        else if(band==bands-1) { r=232; g=236; b=240; }
+        if(band==0 || band==bands/2) { r=0; g=0; b=0; }
+        else if(band==bands-1) { r=255; g=255; b=255; }
         else {
             float p=phase+band*2;
-            r=24+208*(0.5f+0.5f*cosf(p));
-            g=24+208*(0.5f+0.5f*cosf(p+2.094f));
-            b=24+208*(0.5f+0.5f*cosf(p+4.189f));
-        }
-        // Two-tone states alternate a neon field and a bright metal highlight.
-        if(bands==2 && band==0) {
-            r=24+208*(0.5f+0.5f*cosf(phase));
-            g=24+208*(0.5f+0.5f*cosf(phase+2.094f));
-            b=24+208*(0.5f+0.5f*cosf(phase+4.189f));
+            float cr=cosf(p),cg=cosf(p+2.094395f),cb=cosf(p+4.188790f);
+            float lo=fminf(cr,fminf(cg,cb)),hi=fmaxf(cr,fmaxf(cg,cb));
+            r=lroundf(255*(cr-lo)/(hi-lo));
+            g=lroundf(255*(cg-lo)/(hi-lo));
+            b=lroundf(255*(cb-lo)/(hi-lo));
         }
         int index=((y/4)*16+x/4)*16+(y%4)*4+x%4;
         metal_pixels[index]=((r>>3)<<11)|((g>>2)<<5)|(b>>3);
@@ -61,7 +57,7 @@ static Vec rotate(Vec p,float a,float b) {
     float x=p.x*cosf(a)+p.z*sinf(a),z=-p.x*sinf(a)+p.z*cosf(a);
     return (Vec){x,p.y*cosf(b)-z*sinf(b),p.y*sinf(b)+z*cosf(b)};
 }
-static void triangle(Vec a,Vec b,Vec c) {
+static void triangle(Vec a,Vec b,Vec c,u8 shade) {
     Vec u={b.x-a.x,b.y-a.y,b.z-a.z},v={c.x-a.x,c.y-a.y,c.z-a.z};
     Vec n={u.y*v.z-u.z*v.y,u.z*v.x-u.x*v.z,u.x*v.y-u.y*v.x};
     float len=sqrtf(n.x*n.x+n.y*n.y+n.z*n.z);
@@ -69,32 +65,39 @@ static void triangle(Vec a,Vec b,Vec c) {
     n.x/=len; n.y/=len;
     GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
     Vec p[3]={a,b,c};
-    for(int i=0;i<3;i++) vertex(p[i],0.5f+n.x*0.33f+(i==1?0.22f:-0.12f),
-                              0.5f-n.y*0.33f+(i==2?0.22f:-0.12f),255,255);
+    for(int i=0;i<3;i++) vertex(p[i],0.5f+n.x*0.85f+synth.draw.uv_shift+(i==1?0.22f:-0.12f),
+                              0.5f-n.y*0.85f+synth.draw.uv_shift+(i==2?0.22f:-0.12f),shade,255);
     GX_End();
 }
-static void quad(Vec a,Vec b,Vec c,Vec d) { triangle(a,b,c); triangle(a,c,d); }
-static void box(Vec center,Vec size,float angle) {
+static void quad(Vec a,Vec b,Vec c,Vec d,u8 shade) { triangle(a,b,c,shade); triangle(a,c,d,shade); }
+static void box(Vec center,Vec size,float angle,u8 shade) {
     Vec p[8];
     for(int i=0;i<8;i++) p[i]=add(center,rotate((Vec){i&1?size.x:-size.x,i&2?size.y:-size.y,i&4?size.z:-size.z},angle,angle*0.37f));
     static const int faces[24]={0,2,3,1,4,5,7,6,0,1,5,4,2,6,7,3,0,4,6,2,1,3,7,5};
-    for(int i=0;i<6;i++) quad(p[faces[i*4]],p[faces[i*4+1]],p[faces[i*4+2]],p[faces[i*4+3]]);
+    for(int i=0;i<6;i++) quad(p[faces[i*4]],p[faces[i*4+1]],p[faces[i*4+2]],p[faces[i*4+3]],shade);
 }
 static void ortho(void) {
     Mtx m; Mtx44 p; guMtxIdentity(m); GX_LoadPosMtxImm(m,GX_PNMTX0);
     guOrtho(p,1,-1,-1,1,0,10); GX_LoadProjectionMtx(p,GX_ORTHOGRAPHIC);
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
 }
-static void fullscreen(GXTexObj *texture,float zoom,float angle,float ox,float oy,u8 alpha) {
-    ortho(); material(texture);
-    GX_Begin(GX_QUADS,GX_VTXFMT0,4);
-    for(int i=0;i<4;i++) {
-        float x=(i==0||i==3)?-1:1,y=i<2?1:-1;
-        float u=0.5f+(x*cosf(angle)-y*sinf(angle))/(2*zoom)+ox;
-        float v=0.5f-(x*sinf(angle)+y*cosf(angle))/(2*zoom)+oy;
-        vertex((Vec){x,y,-1},u,v,255,alpha);
+static void feedback_slits(void) {
+    ortho(); material(&history);
+    float zoom=1.03f+0.05f*synth.charge;
+    float angle=(synth.flow.x<0?-1:1)*(0.035f+0.035f*synth.charge);
+    for(int strip=0;strip<3;strip++) {
+        float start=-0.85f+strip*0.6f;
+        float width=0.10f+0.14f*synth.charge;
+        GX_Begin(GX_QUADS,GX_VTXFMT0,4);
+        for(int i=0;i<4;i++) {
+            float x=(i==0||i==3)?-1:1,y=(i<2)?start:start+width;
+            if(synth.cut&1) { float temp=x; x=y; y=temp; }
+            float u=0.5f+(x*cosf(angle)-y*sinf(angle))/(2*zoom)+synth.flow.x*0.013f;
+            float v=0.5f-(x*sinf(angle)+y*cosf(angle))/(2*zoom)+0.009f+synth.flow.y*0.013f;
+            vertex((Vec){x,y,-1},u,v,255,255);
+        }
+        GX_End();
     }
-    GX_End();
 }
 static void projection(void) {
     Mtx44 p;
@@ -108,7 +111,7 @@ static void projection(void) {
 static Vec dome_point(int row,int col) {
     float a=col*6.2831853f/16,b=row*3.14159265f/8;
     float phase=synth.draw.phase;
-    float radius=105+18*sinf(a*3+b*4+phase*3)+synth.draw.burst*2*cosf(a*5-b*2);
+    float radius=fmaxf(70,fminf(140,105+18*sinf(a*3+b*4+phase*3)+synth.draw.burst*2*cosf(a*5-b*2)));
     return (Vec){radius*sinf(b)*cosf(a),radius*cosf(b),radius*sinf(b)*sinf(a)};
 }
 static void dome(void) {
@@ -119,7 +122,8 @@ static void dome(void) {
         for(int i=0;i<4;i++) {
             float len=sqrtf(p[i].x*p[i].x+p[i].y*p[i].y+p[i].z*p[i].z);
             // Inward radial normals: the viewer is inside this environment shell.
-            vertex(p[i],0.5f-p[i].x/len*0.48f,0.5f+p[i].y/len*0.48f,255,255);
+            vertex(p[i],0.5f-p[i].x/len*0.85f+synth.draw.uv_shift,
+                   0.5f+p[i].y/len*0.85f+synth.draw.uv_shift,(row+col+synth.cut)%3==0?0:255,255);
         }
         GX_End();
     }
@@ -137,24 +141,24 @@ static void mega(void) {
                 float a=j*6.2831853f/12+phase,b=(j+1)*6.2831853f/12+phase;
                 float r=9+synth.draw.burst*0.8f;
                 quad(add(center,(Vec){r*cosf(a),r*sinf(a),-0.8f}),add(center,(Vec){r*cosf(b),r*sinf(b),-0.8f}),
-                     add(center,(Vec){r*cosf(b),r*sinf(b),0.8f}),add(center,(Vec){r*cosf(a),r*sinf(a),0.8f}));
+                     add(center,(Vec){r*cosf(b),r*sinf(b),0.8f}),add(center,(Vec){r*cosf(a),r*sinf(a),0.8f}),(layer+j)%3==0?0:255);
             }
         } else if(synth.shape==1) {
-            box(center,(Vec){48,0.9f,1.8f},phase);
-            box(center,(Vec){0.9f,48,1.8f},phase);
+            box(center,(Vec){48,0.9f,1.8f},phase,layer%3==0?0:255);
+            box(center,(Vec){0.9f,48,1.8f},phase,(layer+1)%3==0?0:255);
         } else if(synth.shape==2) {
             for(int j=0;j<8;j++) {
                 float a=j*6.2831853f/8+phase;
                 Vec base=add(center,(Vec){2*cosf(a),2*sinf(a),0});
                 Vec tip=add(center,(Vec){48*cosf(a+0.12f),48*sinf(a+0.12f),-18});
-                triangle(add(base,(Vec){-1.4f,-1.4f,0}),add(base,(Vec){1.4f,1.4f,1}),tip);
+                triangle(add(base,(Vec){-1.4f,-1.4f,0}),add(base,(Vec){1.4f,1.4f,1}),tip,(layer+j)%3==0?0:255);
             }
         } else {
             for(int j=0;j<12;j++) {
                 float x=(j-6)*8,a=j*0.75f+phase;
                 Vec c=add(center,(Vec){x,8*sinf(a),4*cosf(a)});
                 Vec d=add(center,(Vec){x+8,8*sinf(a+0.75f),4*cosf(a+0.75f)});
-                quad(add(c,(Vec){0,-5,-2}),add(d,(Vec){0,-5,-2}),add(d,(Vec){0,5,2}),add(c,(Vec){0,5,2}));
+                quad(add(c,(Vec){0,-5,-2}),add(d,(Vec){0,-5,-2}),add(d,(Vec){0,5,2}),add(c,(Vec){0,5,2}),(layer+j)%3==0?0:255);
             }
         }
     }
@@ -167,7 +171,7 @@ static void swarm(void) {
         Vec p=rotate((Vec){size,-size,0},a,a*0.7f);
         Vec q=rotate((Vec){-size,-size,size},a,a*0.7f);
         Vec r=rotate((Vec){0,size*(2+synth.draw.burst),-size},a,a*0.7f);
-        triangle(add(center,p),add(center,q),add(center,r));
+        triangle(add(center,p),add(center,q),add(center,r),i%3==0?0:255);
     }
 }
 static void slasher(void) {
@@ -177,7 +181,7 @@ static void slasher(void) {
     guPerspective(p,synth.draw.fov,aspect,0.2f,180); GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
     float h=tanf(synth.draw.fov*0.008726646f)*0.26f,w=h*aspect;
     float side=(synth.cut&1)?-1:1;
-    quad((Vec){-w,-h,-0.26f},(Vec){w,-h,-0.26f},(Vec){w,side*h*0.6f,-0.26f},(Vec){-w,-side*h*0.6f,-0.26f});
+    quad((Vec){-w,-h,-0.26f},(Vec){w,-h,-0.26f},(Vec){w,side*h*0.6f,-0.26f},(Vec){-w,-side*h*0.6f,-0.26f},synth.cut%3==0?0:255);
 }
 static void mask_rect(float x,float y,float w,float h) {
     GX_Begin(GX_QUADS,GX_VTXFMT0,4);
@@ -208,16 +212,8 @@ static void overlay(int held) {
 }
 static void render(int accent) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
-    // This opaque full-frame underlay also covers dome seams and near-plane clipping.
-    fullscreen(&metal,1,synth.draw.phase*0.1f,0,0,255);
     dome();
-    if(history_valid) {
-        GX_SetBlendMode(GX_BM_BLEND,GX_BL_SRCALPHA,GX_BL_INVSRCALPHA,GX_LO_COPY);
-        float zoom=1.03f+0.05f*synth.charge;
-        float angle=(synth.flow.x<0?-1:1)*(0.035f+0.035f*synth.charge);
-        fullscreen(&history,zoom,angle,synth.flow.x*0.013f,0.009f+synth.flow.y*0.013f,165+70*synth.charge);
-        GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
-    }
+    if(history_valid) feedback_slits();
     projection(); material(&metal); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
     mega(); swarm(); slasher(); overlay(accent);
 }
@@ -238,7 +234,7 @@ int main(void) {
     VIDEO_SetBlack(TRUE); VIDEO_Flush(); VIDEO_WaitVSync();
     if(mode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
     GX_Init(fifo,256*1024);
-    GX_SetCopyClear((GXColor){24,32,48,255},0x00ffffff);
+    GX_SetCopyClear((GXColor){0,0,0,255},0x00ffffff);
     GX_SetViewport(0,0,mode->fbWidth,mode->efbHeight,0,1);
     GX_SetScissor(0,0,mode->fbWidth,mode->efbHeight);
     u32 height=GX_SetDispCopyYScale(GX_GetYScaleFactor(mode->efbHeight,mode->xfbHeight));
@@ -251,13 +247,13 @@ int main(void) {
     GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX0,GX_TEX_ST,GX_F32,0);
     GX_SetNumChans(1); GX_SetNumTevStages(1);
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
-    GX_InitTexObj(&metal,metal_pixels,64,64,GX_TF_RGB565,GX_MIRROR,GX_MIRROR,GX_FALSE);
+    GX_InitTexObj(&metal,metal_pixels,64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_FALSE);
     GX_InitTexObjLOD(&metal,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_InitTexObj(&history,history_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&history,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_SetTexCopySrc(0,0,mode->fbWidth,mode->efbHeight);
     GX_SetTexCopyDst(mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_FALSE);
-    WPAD_SetDataFormat(0,WPAD_FMT_BTNS);
+    WPAD_SetDataFormat(0,WPAD_FMT_BTNS_ACC);
     reset(&synth); make_metal();
     GX_CopyDisp(fb[0],GX_TRUE); GX_DrawDone();
     VIDEO_SetBlack(FALSE); VIDEO_Flush();
@@ -269,7 +265,8 @@ int main(void) {
         u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
-        down=held=0;
+        down=0;
+        held=(check_frame%180>=90 && check_frame%180<120)?WPAD_BUTTON_A:0;
 #endif
         if(down&WPAD_BUTTON_HOME) break;
         int recovery=(held&(WPAD_BUTTON_PLUS|WPAD_BUTTON_MINUS))==(WPAD_BUTTON_PLUS|WPAD_BUTTON_MINUS);
@@ -286,7 +283,16 @@ int main(void) {
             if(down&WPAD_BUTTON_1) { palette_next(&synth); make_metal(); history_valid=0; }
             if(down&WPAD_BUTTON_2) { synth.shape=(synth.shape+1)%4; history_valid=0; }
             advance(&synth,dt,!!(held&WPAD_BUTTON_A));
-            if(impulse) hit(&synth);
+            int shaken=0;
+#ifndef GEEZY_VISUAL_CHECK
+            WPADData *remote=WPAD_Data(0);
+            if(remote->err==WPAD_ERR_NONE && (remote->data_present&WPAD_DATA_ACCEL)) {
+                struct gforce_t gf;
+                WPAD_GForce(0,&gf);
+                shaken=shake(&synth,sqrtf(gf.x*gf.x+gf.y*gf.y+gf.z*gf.z));
+            }
+#endif
+            if(impulse && !shaken) hit(&synth,1);
             if(down&WPAD_BUTTON_PLUS) { synth.live.fov=35; sample_pose(&synth); }
             if(down&WPAD_BUTTON_MINUS) { synth.live.fov=135; sample_pose(&synth); }
         }
@@ -298,8 +304,8 @@ int main(void) {
             for(unsigned i=0;i<stage;i++) palette_next(&synth);
             make_metal(); history_valid=0;
         }
-        if(beat==60) hit(&synth);
-        if(beat==90) { synth.flow=(Vec){0.7f,0,-0.7f}; hit(&synth); }
+        if(beat==60) hit(&synth,1);
+        if(beat==90) { synth.flow=(Vec){0.7f,0,-0.7f}; shake(&synth,2); }
         if(beat>=120 && beat<150) { held|=WPAD_BUTTON_B; synth.cut=stage; }
         check_frame++;
 #endif
