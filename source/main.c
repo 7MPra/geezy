@@ -263,14 +263,15 @@ static void rail_segment(Vec fixed,Vec eye,int axis,float start,float end,float 
         else if(axis==1) mid.y=(a+b)*0.5f;
         else mid.z=(a+b)*0.5f;
         float depth=view[2][0]*mid.x+view[2][1]*mid.y+view[2][2]*mid.z+view[2][3];
-        if(depth>fabsf(view[2][axis])*(b-a)*0.5f+width*2) continue;
+        if(depth>fabsf(view[2][axis])*(b-a)*0.5f+width*4) continue;
         Vec p[8]; u8 shade[8];
         for(int j=0;j<8;j++) {
             int c=j%4; float along=j<4?a:b;
             p[j]=fixed;
-            if(axis==0) { p[j].x=along; p[j].y+=corner[c][0]*width; p[j].z+=corner[c][1]*width; }
-            else if(axis==1) { p[j].y=along; p[j].z+=corner[c][0]*width; p[j].x+=corner[c][1]*width; }
-            else { p[j].z=along; p[j].x+=corner[c][0]*width; p[j].y+=corner[c][1]*width; }
+            float w=width*(synth.beam_style==2?3.0f:1),h=width*(synth.beam_style==2?0.28f:1);
+            if(axis==0) { p[j].x=along; p[j].y+=corner[c][0]*w; p[j].z+=corner[c][1]*h; }
+            else if(axis==1) { p[j].y=along; p[j].z+=corner[c][0]*w; p[j].x+=corner[c][1]*h; }
+            else { p[j].z=along; p[j].x+=corner[c][0]*w; p[j].y+=corner[c][1]*h; }
             shade[j]=(u8)(255*lattice_fade(p[j],eye));
         }
         GX_Begin(GX_QUADS,GX_VTXFMT0,16);
@@ -281,12 +282,54 @@ static void rail_segment(Vec fixed,Vec eye,int axis,float start,float end,float 
         GX_End();
     }
 }
+static void truss_segment(Vec center,Vec diagonal,Vec eye,float width,float flow,float start,float end) {
+    if(end<=start) return;
+    float length=sqrtf(diagonal.x*diagonal.x+diagonal.y*diagonal.y+diagonal.z*diagonal.z);
+    Vec tangent=scale_vec(unit(cross(diagonal,fabsf(diagonal.y)<1?(Vec){0,1,0}:(Vec){0,0,1})),width);
+    Vec side=scale_vec(unit(cross(diagonal,tangent)),width);
+    Vec p[8]; u8 shades[8]; int visible=0;
+    const int signs[4][2]={{-1,-1},{1,-1},{1,1},{-1,1}};
+    for(int i=0;i<8;i++) {
+        p[i]=add(center,add(scale_vec(diagonal,i<4?start:end),add(scale_vec(tangent,signs[i%4][0]),scale_vec(side,signs[i%4][1]))));
+        shades[i]=(u8)(255*lattice_fade(p[i],eye)); visible|=shades[i];
+    }
+    if(!visible) return;
+    GX_Begin(GX_QUADS,GX_VTXFMT0,16);
+    for(int face=0;face<4;face++) for(int j=0;j<4;j++) {
+        int c=(face+(j==1||j==2))%4+(j>=2?4:0);
+        vertex(p[c],(j==1||j==2)?1:0,(j<2?start:end)*length/24+flow,shades[c],255);
+    }
+    GX_End();
+}
+static void truss_beam(Vec center,Vec diagonal,Vec eye,float width,float flow) {
+    float lo,hi;
+    if(beam_gap(center,diagonal,&lo,&hi)) {
+        truss_segment(center,diagonal,eye,width,flow,-1,fminf(1,lo));
+        truss_segment(center,diagonal,eye,width,flow,fmaxf(-1,hi),1);
+    } else truss_segment(center,diagonal,eye,width,flow,-1,1);
+}
+static void trusses(Vec world,Vec eye,float flow) {
+    // A 24-unit cell repeats across the 96-unit world wrap in every axis.
+    for(int x=0;x<8;x++) for(int y=0;y<8;y++) for(int z=0;z<8;z++) {
+        Vec center={lattice_axis(x,world.x,eye.x),lattice_axis(y,world.y,eye.y),lattice_axis(z,world.z,eye.z)};
+        Vec relative=add(center,scale_vec(eye,-1));
+        if(relative.x*relative.x+relative.y*relative.y+relative.z*relative.z>104*104) continue;
+        if(view[2][0]*center.x+view[2][1]*center.y+view[2][2]*center.z+view[2][3]>20) continue;
+        float sign=(x+y+z)%2?1:-1;
+        float width=0.28f+synth.overdrive*0.22f;
+        truss_beam(center,(Vec){11.5f,11.5f*sign,0},eye,width,flow);
+        truss_beam(center,(Vec){0,11.5f,11.5f*sign},eye,width,flow);
+        truss_beam(center,(Vec){11.5f*sign,0,11.5f},eye,width,flow);
+    }
+}
 static void swarm(void) {
     Vec eye=orbit_eye(&synth.draw);
     Vec world=synth.slow?synth.draw.world_cam:synth.live.world_cam;
     float flow=(synth.slow?synth.draw.uv_shift:synth.live.uv_shift)*2;
     quantize_vertices=0; surface(GRID);
+    if(synth.beam_style==3) { trusses(world,eye,flow); quantize_vertices=synth.slow; return; }
     for(int axis=0;axis<3;axis++) for(int i=0;i<8;i++) for(int j=0;j<8;j++) {
+        if(!beam_axis(synth.beam_style,axis)) continue;
         Vec fixed={0,0,0}; float origin,scroll,perp,view_perp;
         if(axis==0) {
             fixed.y=lattice_axis(i,world.y,eye.y); fixed.z=lattice_axis(j,world.z,eye.z);
@@ -353,7 +396,7 @@ static void overlay(void) {
     float t=synth.tick/60.0f,burst=fminf(synth.draw.burst,4);
     int pattern=synth.mask_pattern;
     float angle=0,scale=1,tx=0,ty=0;
-    if(pattern==1) { tx=fmodf(t*1.7f,0.5f); ty=fmodf(t*1.1f,0.5f); }
+    if(pattern==1) { tx=checker_scroll(synth.tick,17); ty=checker_scroll(synth.tick,11); }
     if(pattern>=4) angle=synth.draw.phase*57.2957795f;
     if(pattern==2) angle=-synth.draw.roll+synth.draw.phase*57.2957795f;
     if(pattern==3) { angle=synth.draw.phase*57.2957795f; scale=env*(0.6f+fmodf(t*1.8f,1.5f)+burst*0.12f); tx=wrap(t*2,3); }
@@ -365,7 +408,7 @@ static void overlay(void) {
         for(int i=-1;i<6;i++) mask_rect(-1,-1+i*0.5f-fmodf(t*2,0.5f),2,(0.16f+burst*0.025f)*env);
         break;
     case 1:
-        for(int y=-1;y<5;y++) for(int x=-1;x<5;x++) if((x+y)%2==0)
+        for(int y=-2;y<5;y++) for(int x=-2;x<5;x++) if((x+y)%2==0)
             mask_rect(-1+x*0.5f+(1-env)*0.25f,-1+y*0.5f+(1-env)*0.25f,0.5f*env,0.5f*env);
         break;
     case 2: {
@@ -417,7 +460,7 @@ static void telemetry(void) {
     snprintf(text,sizeof(text),"FOV:%03.0f",synth.draw.fov); small_text(text,0.94f-strlen(text)*0.048f,0.94f);
     snprintf(text,sizeof(text),"SEED:%04X",(unsigned)(synth.seed&65535)); small_text(text,0.94f-strlen(text)*0.048f,0.84f);
     snprintf(text,sizeof(text),"S%d L%d M%d V%d",synth.shape,synth.layout,synth.skin,synth.motion_mode); small_text(text,-0.94f,0.74f);
-    snprintf(text,sizeof(text),"BG%d R%d X%d",synth.backdrop,synth.reflection,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
+    snprintf(text,sizeof(text),"BG%d T%d R%d X%d",synth.backdrop,synth.beam_style,synth.reflection,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
     if(synth.tension<=0.7f || (synth.tick/6)%2==0) {
         char bar[11]; for(int i=0;i<10;i++) bar[i]=i<(int)(synth.tension*10)?'|':' '; bar[10]=0;
         snprintf(text,sizeof(text),"TNS:[%s]",bar); small_text(text,-0.94f,-0.82f);
@@ -426,6 +469,12 @@ static void telemetry(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
 static void render(void) {
+#ifdef GEEZY_CHECKER_CHECK
+    ortho(); material(NULL);
+    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    tint=(GXColor){0,0,0,255}; mask_rect(-1,-1,2,2);
+    synth.mask_pattern=1; synth.mask_env=1; overlay(); return;
+#endif
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
     if(synth.backdrop==0 || synth.backdrop==2) swarm();
@@ -500,9 +549,14 @@ int main(void) {
         u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
-#ifdef GEEZY_LATTICE_CHECK
+#if defined(GEEZY_LATTICE_CHECK) || defined(GEEZY_CHECKER_CHECK)
         down=held=0;
-        if(check_frame==0) { reset(&synth); synth.gear=2; steer(&synth,1,1); }
+        if(check_frame==0) {
+            reset(&synth); synth.gear=2; steer(&synth,1,1);
+#ifdef GEEZY_BEAM_STYLE
+            synth.beam_style=GEEZY_BEAM_STYLE;
+#endif
+        }
 #else
         // Exercise button-only gestures without desktop key injection.
         unsigned stage=(check_frame/300)%6, beat=check_frame%300;
@@ -518,6 +572,9 @@ int main(void) {
         if(beat==1) held=WPAD_BUTTON_1|direction;
         if(beat==3) held=WPAD_BUTTON_2|direction;
         if(beat==5) held=WPAD_BUTTON_1|WPAD_BUTTON_2|direction;
+        if(beat==6) held=WPAD_BUTTON_1|WPAD_BUTTON_2|(u32[]){
+            WPAD_BUTTON_RIGHT|WPAD_BUTTON_UP,WPAD_BUTTON_RIGHT|WPAD_BUTTON_DOWN,
+            WPAD_BUTTON_LEFT|WPAD_BUTTON_DOWN,WPAD_BUTTON_LEFT|WPAD_BUTTON_UP}[stage%4];
         for(unsigned i=0;i<stage%4;i++) if(beat==7+i*2) held=WPAD_BUTTON_A|WPAD_BUTTON_1;
         if(beat==15) held=WPAD_BUTTON_B|WPAD_BUTTON_2;
         for(unsigned i=0;i<stage;i++) if(beat==18+i*2) held=WPAD_BUTTON_B|WPAD_BUTTON_1;

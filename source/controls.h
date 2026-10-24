@@ -13,6 +13,7 @@ static inline void remix(Synth *s) {
     uint32_t recipe=s->seed;
     s->shape=(recipe>>1)%5; s->skin=(recipe>>5)&3; s->layout=(recipe>>8)&3;
     s->backdrop=(recipe>>12)&3; s->reflection=(recipe>>16)&3;
+    s->beam_style=(recipe>>28)&3;
     s->motion_mode=(recipe>>20)&3; s->mask_pattern=(recipe>>24)%6;
     s->motion_phase=s->grid_distance=0; s->grid_tick=0;
     hit(s,1.2f);
@@ -34,7 +35,12 @@ static inline int controls(Synth *s,unsigned held) {
     }
     if(mods && arrows) {
         s->pending_taps&=~mods; s->remix_pending=0;
-        if(direction>=0 && (down&(mods|KEY_ARROWS))) {
+        int diagonal=arrows==(KEY_UP|KEY_LEFT)?0:arrows==(KEY_UP|KEY_RIGHT)?1:
+                     arrows==(KEY_DOWN|KEY_RIGHT)?2:arrows==(KEY_DOWN|KEY_LEFT)?3:-1;
+        if(mods==KEY_MODS && diagonal>=0 && (down&(mods|KEY_ARROWS))) {
+            s->beam_style=diagonal;
+            s->backdrop=0; // Entering the diagonal in either order must select the same background.
+        } else if(direction>=0 && (down&(mods|KEY_ARROWS))) {
             if(mods==KEY_MODS) s->backdrop=direction;
             else if(mods==KEY_ONE) s->skin=direction;
             else s->layout=direction;

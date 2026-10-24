@@ -2,7 +2,7 @@
 <app version="1">
   <name>Geezy</name>
   <coder>Geezy</coder>
-  <version>0.10.0</version>
+  <version>0.11.0</version>
   <short_description>3D video synthesizer</short_description>
-  <long_description>Hold sideways. A: two-second charge, compression and voxel lock; release for 1.2-4x impulse. B: full-screen overdrive and eased inversion graphics. 1/2 tap on release: palette/scene. Hold 1 + direction: material; 2 + direction: formation; 1+2 + direction: background. A+1: reflection; A+2: subjects only; B+1: six geometric masks; B+2: motion only. Hold then release both 1+2: remix. Smooth chrome gyros, spike clusters, double cages, nested frames, a polygon tunnel and an infinite lattice. Orbit/dolly camera, RGB split and corner telemetry. D-pad: tap for directional impulse, hold for 5x boost, faster subject spin and off-center aim. B + D-pad: look away; release to return. Plus/Minus: speed and density gear 0-3. Plus and Minus together: reset. Optional shake: 2.5x impulse. HOME: exit. No sensor bar required.</long_description>
+  <long_description>Hold sideways. A: two-second charge, compression and voxel lock; release for 1.2-4x impulse. B: full-screen overdrive and eased inversion graphics. 1/2 tap on release: palette/scene. Hold 1 + direction: material; 2 + direction: formation; 1+2 + direction: background. 1+2 + diagonals: lattice, gates, blades or diagonal trusses. A+1: reflection; A+2: subjects only; B+1: six geometric masks; B+2: motion only. Hold then release both 1+2: remix. Smooth chrome gyros, spike clusters, double cages, nested frames, a polygon tunnel and an infinite lattice. Orbit/dolly camera, RGB split and corner telemetry. D-pad: tap for directional impulse, hold for 5x boost, faster subject spin and off-center aim. B + D-pad: look away; release to return. Plus/Minus: speed and density gear 0-3. Plus and Minus together: reset. Optional shake: 2.5x impulse. HOME: exit. No sensor bar required.</long_description>
 </app>

@@ -1,10 +1,12 @@
-param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice)
+param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[ValidateRange(0,3)][int]$Beams=0)
 $ErrorActionPreference='Stop'
+if($Lattice -and $Checker){throw 'Choose either -Lattice or -Checker'}
 Push-Location (Split-Path $PSScriptRoot -Parent)
 $process=$null
 try {
     $build='/opt/devkitpro/devkitPPC/bin/powerpc-eabi-gcc -O2 -Wall -Wextra -DGEKKO -DGEEZY_VISUAL_CHECK -mrvl -mcpu=750 -meabi -mhard-float -I/opt/devkitpro/libogc/include source/main.c -L/opt/devkitpro/libogc/lib/wii -lwiiuse -lbte -logc -lm -o geezy-check.elf && /opt/devkitpro/tools/bin/elf2dol geezy-check.elf geezy-check.dol'
-    if($Lattice){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_LATTICE_CHECK')}
+    if($Lattice){$build=$build.Replace('-DGEEZY_VISUAL_CHECK',"-DGEEZY_VISUAL_CHECK -DGEEZY_LATTICE_CHECK -DGEEZY_BEAM_STYLE=$Beams")}
+    if($Checker){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_CHECKER_CHECK')}
     docker run --rm --mount "type=bind,source=$pwd,target=/project" -w /project devkitpro/devkitppc:latest bash -lc $build
     if($LASTEXITCODE -ne 0){throw 'Visual check build failed'}
     New-Item -ItemType Directory -Force .dolphin-check/Config,artifacts | Out-Null
@@ -58,8 +60,8 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    $count=if($Lattice){64}else{26}
-    $prefix=if($Lattice){'lattice'}else{'render'}
+    $count=if($Checker){96}elseif($Lattice){64}else{26}
+    $prefix=if($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     for($i=0;$i -lt $count;$i++) {
         $r=New-Object GeezyCapture+Rect
@@ -82,19 +84,25 @@ public static int NeonPixels(byte[] pixels) {
         $mixed=$bytes.Length/4-$black-$white-$neon
         $results+=[pscustomobject]@{frame=$i;seconds=$timer.Elapsed.TotalSeconds;pixels=$bytes.Length/4;blackPixels=$black;whitePixels=$white;neonPixels=$neon;mixedPixels=$mixed;hash=(Get-FileHash $file).Hash;file=$file}
         $graphics.Dispose();$bitmap.Dispose()
-        Start-Sleep -Milliseconds $(if($Lattice){100}else{1000})
+        Start-Sleep -Milliseconds $(if($Lattice -or $Checker){100}else{1000})
     }
     $results | ConvertTo-Json | Set-Content "artifacts/$prefix-check.json"
     $results | Format-Table frame,blackPixels,whitePixels,neonPixels,mixedPixels
     # RGB channel displacement is inspected alongside the black/white/neon frame checks.
-    if(!$Lattice -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
+    if(!$Lattice -and !$Checker -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
     if(($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
+    if($Checker) {
+        foreach($frame in $results) {
+            $coverage=$frame.blackPixels/$frame.pixels
+            if($coverage -lt 0.48 -or $coverage -gt 0.52){throw 'Checker lost full-screen periodic coverage'}
+        }
+    }
     if($Lattice) {
         foreach($frame in $results) {
             if($frame.pixels-$frame.blackPixels -lt 1000){throw 'Lattice vanished during travel'}
         }
         for($i=1;$i -lt $results.Count;$i++) {
-            if([Math]::Abs($results[$i].blackPixels-$results[$i-1].blackPixels)/$results[$i].pixels -gt 0.2){throw 'Lattice coverage jumped between consecutive captures'}
+            if([Math]::Abs($results[$i].blackPixels-$results[$i-1].blackPixels)/$results[$i].pixels -gt 0.1){throw 'Lattice coverage jumped between consecutive captures'}
         }
     }
 } finally {

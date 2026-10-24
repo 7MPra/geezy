@@ -354,5 +354,48 @@ int main(void) {
         Vec q=matrix_particle(i,(Vec){world.x+96,world.y+96,world.z+96},eye);
         assert(closef(p.x,q.x) && closef(p.y,q.y) && closef(p.z,q.z));
     }
+    // Every wrap is one full checker period; neither axis reverses parity at a seam.
+    for(unsigned tick=0;tick<1200;tick++) for(unsigned rate=11;rate<=17;rate+=6) {
+        float before=checker_scroll(tick,rate),after=checker_scroll(tick+1,rate);
+        assert(closef(wrap(after-before,1),rate/600.0f));
+        assert(closef(before,checker_scroll(tick+600,rate)));
+        assert(before>=0 && before<1);
+    }
+    assert(closef(checker_scroll(600,17),0) && closef(checker_scroll(600,11),0));
+    unsigned diagonals[4]={KEY_UP|KEY_LEFT,KEY_UP|KEY_RIGHT,KEY_DOWN|KEY_RIGHT,KEY_DOWN|KEY_LEFT};
+    for(int style=0;style<4;style++) {
+        reset(&s); s.backdrop=3;
+        controls(&s,KEY_MODS); controls(&s,KEY_MODS|diagonals[style]);
+        assert(s.beam_style==style && s.backdrop==0);
+        controls(&s,0); assert(s.seed==7 && !s.remix_pending);
+        controls(&s,KEY_MODS|KEY_DOWN); controls(&s,0);
+        assert(s.backdrop==2 && s.beam_style==style);
+        controls(&s,KEY_MODS|diagonals[style]); controls(&s,0);
+        assert(s.backdrop==0 && s.beam_style==style);
+        for(int order=0;order<2;order++) {
+            unsigned first=diagonals[style]&(~diagonals[style]+1);
+            controls(&s,KEY_MODS|(order?diagonals[style]^first:first));
+            controls(&s,KEY_MODS|diagonals[style]); controls(&s,0);
+            assert(s.backdrop==0 && s.beam_style==style && s.seed==7);
+        }
+        int axes=0; for(int axis=0;axis<3;axis++) if(beam_axis(style,axis)) axes|=1<<axis;
+        assert((axes==(int[]){7,3,4,0}[style]));
+    }
+    unsigned styles=0; reset(&s);
+    for(int i=0;i<256;i++) { remix(&s); styles|=1u<<s.beam_style; }
+    assert(styles==15);
+    controls(&s,KEY_PLUS|KEY_MINUS); assert(s.beam_style==0);
+    // A diagonal strut crossing the subject sphere must be cut, not just shaded black.
+    float enter,leave;
+    Vec center={0,0,16},half={11.5f,11.5f,0};
+    assert(beam_gap(center,half,&enter,&leave));
+    assert(enter>-1 && enter<0 && leave>0 && leave<1);
+    for(int i=0;i<2;i++) {
+        float t=i?leave:enter;
+        float x=center.x+half.x*t,y=center.y+half.y*t,z=center.z+half.z*t;
+        assert(fabsf(x*x+y*y+z*z-400)<0.001f);
+    }
+    assert(!beam_gap((Vec){0,0,40},half,&enter,&leave));
+    assert(beam_gap((Vec){0,0,0},half,&enter,&leave) && enter<-1 && leave>1);
     return 0;
 }

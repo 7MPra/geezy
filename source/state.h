@@ -15,7 +15,7 @@ typedef struct {
     float bank, tension, overdrive, boost, mask_env, motion_phase, grid_distance;
     unsigned palette_count, tick, sample_tick, flash_ticks, shake_cooldown, stutter_tick, grid_tick;
     int focus_index, shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
-    int skin, layout, backdrop, reflection, remix_pending;
+    int skin, layout, backdrop, reflection, remix_pending, beam_style;
     unsigned held_buttons, pending_taps;
     uint32_t seed;
 } Synth;
@@ -69,6 +69,22 @@ static inline float particle_fade(Vec p,Vec eye) {
 static inline Vec formation(int index,int variant) {
     static const Vec offsets[3]={{-5,-2,2},{5,3,-1},{1,-1,-5}};
     return offsets[(index+variant)%3];
+}
+// A checker repeats every two half-unit cells, not after one cell.
+static inline float checker_scroll(unsigned tick,unsigned rate) {
+    return ((tick%600)*rate%600)/600.0f;
+}
+static inline int beam_axis(int style,int axis) {
+    return style==0 || (style==1 && axis!=2) || (style==2 && axis==2);
+}
+static inline int beam_gap(Vec center,Vec half,float *lo,float *hi) {
+    float a=half.x*half.x+half.y*half.y+half.z*half.z;
+    float b=center.x*half.x+center.y*half.y+center.z*half.z;
+    float c=center.x*center.x+center.y*center.y+center.z*center.z-20*20;
+    float discriminant=b*b-a*c;
+    if(a<0.0001f || discriminant<=0) return 0;
+    *lo=(-b-sqrtf(discriminant))/a; *hi=(-b+sqrtf(discriminant))/a;
+    return 1;
 }
 static inline float lattice_axis(int index,float world,float eye) {
     return eye+wrap(index*24-world-eye,192);
