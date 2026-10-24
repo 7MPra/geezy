@@ -1,5 +1,6 @@
 #include <assert.h>
 #include "../source/state.h"
+#include "../source/font.h"
 static int closef(float a,float b) { return fabsf(a-b)<0.001f; }
 int main(void) {
     Synth s; reset(&s);
@@ -8,19 +9,27 @@ int main(void) {
     advance(&s,1.0f/60,0,0,0);
     assert(closef(s.draw.camera.z,-0.6f));
     reset(&s);
-    // A repeats the captured pose every four ticks, then releases exactly one hit.
-    Pose loop[4];
-    for(int i=0;i<4;i++) { advance(&s,1.0f/60,1,0,0); loop[i]=s.draw; }
-    assert(loop[0].camera.z!=loop[1].camera.z && loop[1].fov!=loop[3].fov);
-    for(int i=0;i<12;i++) {
+    // Charge holds each pose for eight ticks and reaches full tension in two seconds.
+    float fov=80;
+    for(int i=1;i<=120;i++) {
+        Pose before=s.draw;
         advance(&s,1.0f/60,1,0,0);
-        assert(closef(s.draw.camera.z,loop[i%4].camera.z));
-        assert(closef(s.draw.phase,loop[i%4].phase) && s.draw.fov==loop[i%4].fov);
+        if(i%8) assert(s.draw.fov==before.fov && s.draw.camera.z==before.camera.z);
+        assert(s.draw.fov<=fov); fov=s.draw.fov;
     }
+    assert(closef(s.tension,1) && closef(s.draw.fov,38));
+    advance(&s,0,0,0,0);
+    assert(s.tension==0 && s.overdrive==1 && s.draw.fov==125);
+    assert(closef(s.velocity.z,-2400));
     advance(&s,1.0f/60,0,0,0);
-    assert(closef(s.velocity.z,-1080*0.85f));
-    advance(&s,1.0f/60,0,0,0);
-    assert(closef(s.velocity.z,-1080*0.85f*0.85f));
+    assert(closef(s.velocity.z,-2400*0.85f));
+    reset(&s); advance(&s,1.0f/60,1,0,0); advance(&s,0,0,0,0);
+    assert(fabsf(s.velocity.z)>720 && fabsf(s.velocity.z)<750);
+    for(int c=0;c<256;c++) for(int row=0;row<5;row++) assert(font_glyph((char)c)[row]<32);
+    assert(font_glyph(' ')[0]==0 && font_glyph('?')[0]==0 && font_glyph('0')[0]!=0);
+    reset(&s); for(int i=0;i<4;i++) next_scene(&s);
+    assert(s.shape==4 && s.motion_mode==0);
+    next_scene(&s); assert(s.shape==0 && s.motion_mode==1);
     assert(closef(snap_vertex(0.5f),2.0f/3) && closef(snap_vertex(-0.5f),-2.0f/3));
     reset(&s);
     for(int i=0;i<60;i++) advance(&s,1.0f/60,0,0,0);
@@ -64,7 +73,12 @@ int main(void) {
         }
         assert(axes==7);
     }
-    Synth a,b; reset(&a); reset(&b); hit(&a,1); hit(&b,2.5f);
+    Synth a,b; reset(&a); reset(&b);
+    for(int i=0;i<180;i++) advance(&a,1.0f/60,1,0,0);
+    for(int i=0;i<90;i++) advance(&b,1.0f/30,1,0,0);
+    assert(a.tension==1 && b.tension==1);
+    assert(closef(a.draw.fov,b.draw.fov) && closef(a.draw.camera.z,b.draw.camera.z));
+    reset(&a); reset(&b); hit(&a,1); hit(&b,2.5f);
     assert(a.live.camera.z==0 && a.draw.camera.z==0 && a.live.fov==80);
     assert(a.live.roll==0 && a.live.aim_x==0 && a.live.burst==0);
     assert(a.target_fov==105 && fabsf(a.target_aim_x)<=0.35f && fabsf(a.target_aim_y)<=0.35f);

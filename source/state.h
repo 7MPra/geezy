@@ -8,7 +8,7 @@ typedef struct {
     Pose live, draw, stutter_anchor;
     Vec velocity, flow, stutter_flow;
     float spin_velocity, burst_velocity, accumulator, target_fov, target_roll, target_aim_x, target_aim_y;
-    float overdrive, boost, mask_env, motion_phase, grid_distance;
+    float tension, overdrive, boost, mask_env, motion_phase, grid_distance;
     unsigned tick, sample_tick, flash_ticks, shake_cooldown, stutter_tick, grid_tick;
     int shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
     uint32_t seed;
@@ -27,7 +27,7 @@ static inline void change_gear(Synth *s,int delta) {
     if(s->gear>3) s->gear=3;
 }
 static inline void next_scene(Synth *s) {
-    s->shape=s->motion_mode=(s->shape+1)%4;
+    s->shape=(s->shape+1)%5; s->motion_mode=(s->motion_mode+1)%4;
     s->motion_phase=s->grid_distance=0;
     s->grid_tick=0; s->grid_axis=2;
 }
@@ -98,13 +98,15 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         s->live=s->draw;
     } else if(!slow && s->slow) {
         s->live=s->draw;
-        hit(s,1.8f);
-        s->sample_tick=0;
+        hit(s,1.2f+s->tension*2.8f);
+        s->tension=0; s->overdrive=1;
+        s->live.fov=125; sample_pose(s);
     }
     s->slow=slow;
     while(s->accumulator>=1.0f/60) {
         s->accumulator-=1.0f/60; s->tick++; s->sample_tick++;
         s->boost+=((boosting?5.0f:1.0f)-s->boost)*(boosting?0.08f:0.12f);
+        if(slow) s->tension=clamp01(s->tension+1.0f/120);
         if(!slow) {
             float whip=s->motion_mode==3?0.2f*sinf(s->motion_phase*2):0;
             float aim=fmaxf(-0.35f,fminf(0.35f,s->target_aim_x+whip));
@@ -127,16 +129,17 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         if(s->mask_env<0.001f) s->mask_env=0;
         if(s->flash_ticks) s->flash_ticks--;
         if(s->shake_cooldown) s->shake_cooldown--;
-        if(slow) {
-            unsigned step=++s->stutter_tick%4;
+        if(slow && ++s->stutter_tick%8==0) {
+            unsigned step=(s->stutter_tick/8)%4;
             s->draw=s->stutter_anchor;
             s->draw.camera.x=wrap(s->draw.camera.x+s->stutter_flow.x*step*0.9f,96);
             s->draw.camera.y=wrap(s->draw.camera.y+s->stutter_flow.y*step*0.9f,96);
             s->draw.camera.z=wrap(s->draw.camera.z+s->stutter_flow.z*step*0.9f,96);
             s->draw.phase=wrap(s->draw.phase+step*0.12f,6.2831853f);
-            s->draw.fov=(step<2)?45:115;
+            s->draw.fov=80-s->tension*42;
+            s->draw.uv_shift=wrap(s->stutter_anchor.uv_shift+s->tension*s->stutter_tick*0.035f,1);
             s->draw.burst=s->live.burst;
-        } else if(s->sample_tick>=3) sample_pose(s);
+        } else if(!slow && s->sample_tick>=3) sample_pose(s);
     }
 }
 #endif

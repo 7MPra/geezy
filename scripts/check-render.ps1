@@ -81,7 +81,7 @@ public static int NeonPixels(byte[] pixels) {
     }
     $results | ConvertTo-Json | Set-Content artifacts/render-check.json
     $results | Format-Table frame,blackPixels,whitePixels,neonPixels,mixedPixels
-    # The transient background echo is intentionally dim; foreground palette stays pure.
+    # RGB channel displacement is inspected alongside the black/white/neon frame checks.
     if(($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
     if(($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
 } finally {
