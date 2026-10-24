@@ -15,6 +15,8 @@ typedef struct {
     float bank, tension, overdrive, boost, mask_env, motion_phase, grid_distance;
     unsigned palette_count, tick, sample_tick, flash_ticks, shake_cooldown, stutter_tick, grid_tick;
     int focus_index, shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
+    int skin, layout, backdrop, reflection, remix_pending;
+    unsigned held_buttons, pending_taps;
     uint32_t seed;
 } Synth;
 static inline float wrap(float x,float span) { return x-span*floorf(x/span+0.5f); }
@@ -52,6 +54,11 @@ static inline Vec tunnel_particle(int index,Vec world,Vec eye) {
     return (Vec){eye.x+wrap(radius*cosf(angle)-world.x-eye.x,96),
                  eye.y+wrap(radius*sinf(angle)-world.y-eye.y,96),
                  eye.z+wrap(ring*8-world.z-eye.z,96)};
+}
+static inline Vec matrix_particle(int index,Vec world,Vec eye) {
+    return (Vec){eye.x+wrap((index%6)*16-world.x-eye.x,96),
+                 eye.y+wrap(((index/6)%4)*24-world.y-eye.y,96),
+                 eye.z+wrap((index/24)*12-world.z-eye.z,96)};
 }
 static inline float particle_fade(Vec p,Vec eye) {
     float x=p.x-eye.x,y=p.y-eye.y,z=p.z-eye.z;
@@ -106,7 +113,6 @@ static inline void hit(Synth *s,float strength) {
     s->spin_velocity+=((s->cut&1)?-22:22)*strength;
     s->burst_velocity+=32*strength;
     s->cut=(s->cut+1)%4;
-    s->mask_pattern=(s->mask_pattern+1)%4;
     s->target_fov=(s->cut&1)?105:55;
     s->target_roll=(float[]){0,45,-60,90}[s->cut];
     s->target_aim_x=(float[]){0,0.3f,-0.3f,0.15f}[s->cut];
@@ -168,6 +174,10 @@ static inline float spring(float pos,float target,float *velocity) {
 static inline void update_rig(Synth *s) {
     for(int i=0;i<3;i++) {
         Vec target=formation(i,s->cut+s->shape);
+        int slot=(i+s->cut)%3;
+        if(s->layout==1) target=(Vec){0,(slot-1)*5.5f,slot%2?-2:1};
+        else if(s->layout==2) target=(Vec){(slot-1)*7.0f,0,1-slot*3.0f};
+        else if(s->layout==3) target=(Vec){slot==1?3:-2,slot==2?2:-1,6-slot*8.0f};
         float compression=1-0.65f*s->tension;
         s->live.objects[i].x+=(target.x*compression-s->live.objects[i].x)*0.12f;
         s->live.objects[i].y+=(target.y*compression-s->live.objects[i].y)*0.12f;

@@ -1,5 +1,5 @@
 #include <assert.h>
-#include "../source/state.h"
+#include "../source/controls.h"
 #include "../source/font.h"
 #include "../source/chrome.h"
 #include "../source/grid.h"
@@ -278,5 +278,81 @@ int main(void) {
     palette_next(&s); assert(s.frequency==2);
     palette_next(&s); assert(s.frequency==0);
     reset(&s); assert(s.live.fov==80 && s.target_fov==80 && s.shape==0 && s.shake_cooldown==0);
+    // Taps commit once on release; chords consume taps in either press order.
+    reset(&s); uint32_t seed=s.seed;
+    assert(!controls(&s,KEY_ONE) && s.seed==seed);
+    assert(controls(&s,0) && s.seed!=seed);
+    seed=s.seed; assert(!controls(&s,0) && s.seed==seed);
+    controls(&s,KEY_TWO); assert(s.shape==0);
+    controls(&s,0); assert(s.shape==1 && s.motion_mode==1);
+    const unsigned dirs[4]={KEY_UP,KEY_RIGHT,KEY_DOWN,KEY_LEFT};
+    for(int d=0;d<4;d++) for(int order=0;order<3;order++) {
+        reset(&s); seed=s.seed;
+        if(order==0) controls(&s,KEY_ONE);
+        if(order==1) controls(&s,dirs[d]);
+        controls(&s,KEY_ONE|dirs[d]);
+        assert(s.skin==d && s.shape==0 && s.seed==seed);
+        for(int j=0;j<10;j++) controls(&s,KEY_ONE|dirs[d]);
+        controls(&s,0); assert(s.seed==seed && s.skin==d);
+        controls(&s,KEY_TWO|dirs[d]); controls(&s,0);
+        assert(s.layout==d && s.shape==0 && s.motion_mode==0);
+        controls(&s,KEY_MODS); controls(&s,KEY_MODS|dirs[d]);
+        controls(&s,KEY_TWO|dirs[d]); controls(&s,0);
+        assert(s.backdrop==d && s.seed==seed && !s.remix_pending);
+    }
+    reset(&s); controls(&s,KEY_ONE|KEY_UP|KEY_RIGHT); controls(&s,0);
+    assert(s.skin==0 && s.seed==7); // Ambiguous diagonals consume the tap without choosing a bank.
+    for(int i=0;i<12;i++) {
+        controls(&s,KEY_B|KEY_ONE); controls(&s,KEY_B|KEY_ONE);
+        assert(s.mask_pattern==(i+1)%6);
+        controls(&s,0); assert(s.seed==7);
+    }
+    for(int i=0;i<8;i++) {
+        controls(&s,KEY_B|KEY_TWO); controls(&s,0);
+        assert(s.motion_mode==(i+1)%4 && s.shape==0);
+        controls(&s,KEY_A|KEY_ONE); controls(&s,0);
+        assert(s.reflection==(i+1)%4 && s.seed==7);
+        controls(&s,KEY_A|KEY_TWO); controls(&s,0);
+        assert(s.shape==1);
+        s.shape=0;
+    }
+    for(int reverse=0;reverse<2;reverse++) {
+        reset(&s);
+        controls(&s,reverse?KEY_ONE:KEY_A);
+        assert(controls(&s,KEY_A|KEY_ONE));
+        controls(&s,reverse?KEY_A:KEY_ONE); controls(&s,0);
+        assert(s.reflection==1 && s.seed==7);
+        controls(&s,reverse?KEY_ONE:KEY_B); controls(&s,KEY_B|KEY_ONE);
+        controls(&s,0); int mask=s.mask_pattern; hit(&s,1);
+        assert(mask==1 && s.mask_pattern==mask && s.seed==7);
+    }
+    reset(&s); controls(&s,KEY_A);
+    for(int i=0;i<120;i++) advance(&s,1.0f/60,1,0,0);
+    controls(&s,KEY_A|KEY_TWO); controls(&s,KEY_A);
+    assert(s.shape==1 && s.motion_mode==0 && closef(s.tension,1));
+    controls(&s,0); advance(&s,0,0,0,0);
+    assert(s.tension==0 && closef(s.velocity.z,-2400));
+    reset(&a); reset(&b);
+    unsigned skins=0,layouts=0,backgrounds=0,reflections=0,shapes=0;
+    for(int i=0;i<256;i++) {
+        controls(&a,KEY_ONE); controls(&a,KEY_MODS); controls(&a,KEY_TWO);
+        assert(controls(&a,0));
+        controls(&b,KEY_MODS); assert(controls(&b,0));
+        assert(a.seed==b.seed && a.shape==b.shape && a.skin==b.skin);
+        assert(a.gear==1 && a.shape<5 && a.motion_mode<4 && a.mask_pattern<6);
+        skins|=1u<<a.skin; layouts|=1u<<a.layout; backgrounds|=1u<<a.backdrop;
+        reflections|=1u<<a.reflection; shapes|=1u<<a.shape;
+        for(int j=0;j<10;j++) advance(&a,1.0f/60,0,0,0);
+        Vec target=view_target(&a.draw); assert(isfinite(target.x) && isfinite(target.y) && isfinite(target.z));
+    }
+    assert(skins==15 && layouts==15 && backgrounds==15 && reflections==15 && shapes==31);
+    controls(&a,KEY_ONE); controls(&a,KEY_ONE|KEY_PLUS|KEY_MINUS); controls(&a,0);
+    assert(a.seed==7 && a.skin==0 && a.layout==0 && a.backdrop==0 && a.reflection==0);
+    assert(steering_buttons(KEY_RIGHT|KEY_B) && !steering_buttons(KEY_RIGHT|KEY_ONE));
+    for(int i=0;i<192;i++) {
+        Vec eye={0,0,16},world={27,-13,39},p=matrix_particle(i,world,eye);
+        Vec q=matrix_particle(i,(Vec){world.x+96,world.y+96,world.z+96},eye);
+        assert(closef(p.x,q.x) && closef(p.y,q.y) && closef(p.z,q.z));
+    }
     return 0;
 }

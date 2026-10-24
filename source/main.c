@@ -4,7 +4,7 @@
 #include <malloc.h>
 #include <stdlib.h>
 #include <string.h>
-#include "state.h"
+#include "controls.h"
 #include "font.h"
 #include "chrome.h"
 #include "grid.h"
@@ -23,7 +23,7 @@ static float aspect;
 static Mtx view;
 static GXColor tint={255,255,255,255};
 enum { CHROME, GRID, WIRE, MATTE, GHOST };
-static int surface_kind;
+static int surface_kind, primary_surface;
 static void power(void) { quitting=1; }
 static void reset_button(u32 irq,void *ctx) { (void)irq; (void)ctx; quitting=1; }
 
@@ -37,7 +37,7 @@ static void make_metal(void) {
     nr=(nr-lo)/(hi-lo); ng=(ng-lo)/(hi-lo); nb=(nb-lo)/(hi-lo);
     for(int y=0;y<128;y++) for(int x=0;x<128;x++) {
         ChromeColor sky={nr,ng,nb},ground={ng,nb,nr};
-        if(synth.palette_count && synth.palette_count%4==0) {
+        if(synth.reflection==2 || (synth.reflection==0 && synth.palette_count && synth.palette_count%4==0)) {
             float angle=atan2f(y-63.5f,x-63.5f)*2+y*7.0f/127+phase;
             sky=(ChromeColor){0.5f+0.5f*cosf(angle),0.5f+0.5f*cosf(angle+2.094395f),0.5f+0.5f*cosf(angle+4.188790f)};
             float low=fminf(sky.r,fminf(sky.g,sky.b)),high=fmaxf(sky.r,fmaxf(sky.g,sky.b));
@@ -45,6 +45,9 @@ static void make_metal(void) {
             ground=(ChromeColor){sky.g,sky.b,sky.r};
         }
         ChromeColor color=chrome_profile(chrome_normal_y(x,y),sky,ground);
+        float light=fmaxf(color.r,fmaxf(color.g,color.b));
+        if(synth.reflection==1) color=light<0.18f?(ChromeColor){0,0,0}:light<0.5f?sky:light<0.8f?ground:(ChromeColor){1,1,1};
+        if(synth.reflection==3) color=(ChromeColor){light,light,light};
         int i=((y/4)*32+x/4)*16+(y%4)*4+x%4;
         chrome_pixels[i]=rgb565(color.r,color.g,color.b);
     }
@@ -67,6 +70,7 @@ static void material(GXTexObj *texture) {
     if(texture) GX_LoadTexObj(texture,GX_TEXMAP0);
 }
 static void surface(int kind) {
+    if(primary_surface && kind==CHROME) kind=(int[]){CHROME,GRID,GHOST,WIRE}[synth.skin];
     surface_kind=kind;
     material(kind==CHROME?&chrome_tex:kind==GRID?&grid_tex:kind==GHOST?&chrome_tex:NULL);
     if(kind==MATTE) tint=(GXColor){0,0,0,255};
@@ -229,6 +233,7 @@ static void frame_cluster(Vec center,float angle) {
     }
 }
 static void mega(void) {
+    primary_surface=1;
     static const int arrangement[5][3]={{0,1,2},{0,0,0},{1,2,2},{2,0,1},{3,0,1}};
     for(int i=0;i<3;i++) {
         Vec center=synth.draw.objects[i];
@@ -244,6 +249,7 @@ static void mega(void) {
         else if(kind==2) stellar(center,1.55f*size,phase);
         else frame_cluster(center,phase);
     }
+    primary_surface=0;
 }
 static void rail_segment(Vec fixed,Vec eye,int axis,float start,float end,float width,float world,float flow) {
     if(end<=start) return;
@@ -321,7 +327,7 @@ static void vector_tunnel(void) {
     // Fixed world-space rings; fade completely before recycling any axis.
     quantize_vertices=0; surface(WIRE);
     for(int i=0;i<192;i++) {
-        Vec center=tunnel_particle(i,p->world_cam,eye);
+        Vec center=synth.backdrop==3?matrix_particle(i,p->world_cam,eye):tunnel_particle(i,p->world_cam,eye);
         float fade=particle_fade(center,eye);
         if(fade<0.004f) continue;
         u8 shade=(u8)(fade*255);
@@ -348,6 +354,7 @@ static void overlay(void) {
     int pattern=synth.mask_pattern;
     float angle=0,scale=1,tx=0,ty=0;
     if(pattern==1) { tx=fmodf(t*1.7f,0.5f); ty=fmodf(t*1.1f,0.5f); }
+    if(pattern>=4) angle=synth.draw.phase*57.2957795f;
     if(pattern==2) angle=-synth.draw.roll+synth.draw.phase*57.2957795f;
     if(pattern==3) { angle=synth.draw.phase*57.2957795f; scale=env*(0.6f+fmodf(t*1.8f,1.5f)+burst*0.12f); tx=wrap(t*2,3); }
     Mtx m; guVector axis={0,0,1}; guMtxRotAxisDeg(m,&axis,angle);
@@ -373,6 +380,23 @@ static void overlay(void) {
         vertex((Vec){-1,-1,-1},0,0,255,255); vertex((Vec){1,-1,-1},0,0,255,255); vertex((Vec){1,1,-1},0,0,255,255);
         GX_End();
         break;
+    case 4:
+        for(int i=0;i<4;i++) {
+            float r=0.15f+i*0.42f+fmodf(t*0.7f,0.42f),w=0.09f*env;
+            mask_rect(-r,-r,r*2,w); mask_rect(-r,r-w,r*2,w);
+            mask_rect(-r,-r+w,w,2*r-2*w); mask_rect(r-w,-r+w,w,2*r-2*w);
+        }
+        break;
+    case 5:
+        GX_Begin(GX_TRIANGLES,GX_VTXFMT0,24);
+        for(int i=0;i<8;i++) {
+            float a=i*0.7853982f,w=0.28f*env;
+            vertex((Vec){0,0,-1},0,0,255,255);
+            vertex((Vec){2*cosf(a-w),2*sinf(a-w),-1},0,0,255,255);
+            vertex((Vec){2*cosf(a+w),2*sinf(a+w),-1},0,0,255,255);
+        }
+        GX_End();
+        break;
     }
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
@@ -392,6 +416,8 @@ static void telemetry(void) {
     snprintf(text,sizeof(text),"GEAR:%d",synth.gear); small_text(text,-0.94f,0.84f);
     snprintf(text,sizeof(text),"FOV:%03.0f",synth.draw.fov); small_text(text,0.94f-strlen(text)*0.048f,0.94f);
     snprintf(text,sizeof(text),"SEED:%04X",(unsigned)(synth.seed&65535)); small_text(text,0.94f-strlen(text)*0.048f,0.84f);
+    snprintf(text,sizeof(text),"S%d L%d M%d V%d",synth.shape,synth.layout,synth.skin,synth.motion_mode); small_text(text,-0.94f,0.74f);
+    snprintf(text,sizeof(text),"BG%d R%d X%d",synth.backdrop,synth.reflection,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
     if(synth.tension<=0.7f || (synth.tick/6)%2==0) {
         char bar[11]; for(int i=0;i<10;i++) bar[i]=i<(int)(synth.tension*10)?'|':' '; bar[10]=0;
         snprintf(text,sizeof(text),"TNS:[%s]",bar); small_text(text,-0.94f,-0.82f);
@@ -402,7 +428,8 @@ static void telemetry(void) {
 static void render(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    swarm(); vector_tunnel();
+    if(synth.backdrop==0 || synth.backdrop==2) swarm();
+    if(synth.backdrop!=2) vector_tunnel();
 #ifndef GEEZY_LATTICE_CHECK
     mega();
 #else
@@ -487,41 +514,44 @@ int main(void) {
             for(unsigned i=0;i<stage;i++) palette_next(&synth);
             make_metal();
         }
+        u32 direction=(u32[]){WPAD_BUTTON_RIGHT,WPAD_BUTTON_DOWN,WPAD_BUTTON_LEFT,WPAD_BUTTON_UP}[stage%4];
+        if(beat==1) held=WPAD_BUTTON_1|direction;
+        if(beat==3) held=WPAD_BUTTON_2|direction;
+        if(beat==5) held=WPAD_BUTTON_1|WPAD_BUTTON_2|direction;
+        for(unsigned i=0;i<stage%4;i++) if(beat==7+i*2) held=WPAD_BUTTON_A|WPAD_BUTTON_1;
+        if(beat==15) held=WPAD_BUTTON_B|WPAD_BUTTON_2;
+        for(unsigned i=0;i<stage;i++) if(beat==18+i*2) held=WPAD_BUTTON_B|WPAD_BUTTON_1;
         if(beat==30) down=WPAD_BUTTON_DOWN;
         if(beat>=30 && beat<90) held|=WPAD_BUTTON_DOWN;
         if(beat>=60 && beat<90) held|=WPAD_BUTTON_B;
         if(beat>=90 && beat<210) held|=WPAD_BUTTON_A;
-        if(beat>=240 && beat<280) { held|=WPAD_BUTTON_B; synth.mask_pattern=stage%4; }
+        if(beat>=240 && beat<280) held|=WPAD_BUTTON_B;
 #endif
         check_frame++;
 #endif
         if(down&WPAD_BUTTON_HOME) break;
-        int recovery=(held&(WPAD_BUTTON_PLUS|WPAD_BUTTON_MINUS))==(WPAD_BUTTON_PLUS|WPAD_BUTTON_MINUS);
-        if(recovery) { reset(&synth); make_metal(); }
-        else {
-            int impulse=!!(down&(WPAD_BUTTON_B|WPAD_BUTTON_1|WPAD_BUTTON_2));
-            u32 arrows=WPAD_BUTTON_UP|WPAD_BUTTON_DOWN|WPAD_BUTTON_LEFT|WPAD_BUTTON_RIGHT;
-            if(held&arrows) {
-                int x=!!(held&WPAD_BUTTON_DOWN)-!!(held&WPAD_BUTTON_UP);
-                int y=!!(held&WPAD_BUTTON_RIGHT)-!!(held&WPAD_BUTTON_LEFT);
-                steer(&synth,x,y);
-                if(down&arrows) impulse=1;
-            }
-            if(down&WPAD_BUTTON_1) { palette_next(&synth); make_metal(); }
-            if(down&WPAD_BUTTON_2) { next_scene(&synth); }
-            int shaken=0;
+        unsigned keys=0;
+        if(held&WPAD_BUTTON_A) keys|=KEY_A;
+        if(held&WPAD_BUTTON_B) keys|=KEY_B;
+        if(held&WPAD_BUTTON_1) keys|=KEY_ONE;
+        if(held&WPAD_BUTTON_2) keys|=KEY_TWO;
+        if(held&WPAD_BUTTON_RIGHT) keys|=KEY_UP;
+        if(held&WPAD_BUTTON_DOWN) keys|=KEY_RIGHT;
+        if(held&WPAD_BUTTON_LEFT) keys|=KEY_DOWN;
+        if(held&WPAD_BUTTON_UP) keys|=KEY_LEFT;
+        if(held&WPAD_BUTTON_PLUS) keys|=KEY_PLUS;
+        if(held&WPAD_BUTTON_MINUS) keys|=KEY_MINUS;
+        if(controls(&synth,keys)) make_metal();
+        int recovery=(keys&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS);
+        if(!recovery) {
 #ifndef GEEZY_VISUAL_CHECK
             WPADData *remote=WPAD_Data(0);
             if(remote->err==WPAD_ERR_NONE && (remote->data_present&WPAD_DATA_ACCEL)) {
-                struct gforce_t gf;
-                WPAD_GForce(0,&gf);
-                shaken=shake(&synth,sqrtf(gf.x*gf.x+gf.y*gf.y+gf.z*gf.z));
+                struct gforce_t gf; WPAD_GForce(0,&gf);
+                shake(&synth,sqrtf(gf.x*gf.x+gf.y*gf.y+gf.z*gf.z));
             }
 #endif
-            if(impulse && !shaken) hit(&synth,1);
-            if(down&WPAD_BUTTON_PLUS) change_gear(&synth,1);
-            if(down&WPAD_BUTTON_MINUS) change_gear(&synth,-1);
-            advance(&synth,dt,!!(held&WPAD_BUTTON_A),!!(held&arrows),!!(held&WPAD_BUTTON_B));
+            advance(&synth,dt,!!(keys&KEY_A),steering_buttons(keys),!!(keys&KEY_B));
         }
         GX_SetColorUpdate(GX_TRUE); GX_InvalidateTexAll(); render();
         GX_DrawDone();
