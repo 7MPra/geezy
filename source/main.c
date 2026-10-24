@@ -11,48 +11,67 @@
 static Synth synth;
 static volatile int quitting;
 static GXRModeObj *mode;
-static GXTexObj metal, history, dither_tex;
-static u16 metal_pixels[64*64] ATTRIBUTE_ALIGN(32);
+static GXTexObj chrome_tex, grid_tex, history, dither_tex;
+static u16 chrome_pixels[128*128] ATTRIBUTE_ALIGN(32);
+static u16 grid_pixels[64*64] ATTRIBUTE_ALIGN(32);
 static u8 dither_pixels[64] ATTRIBUTE_ALIGN(32);
 static void *history_pixels;
 static int quantize_vertices;
 static float aspect;
+static Mtx view;
+static GXColor tint={255,255,255,255};
+enum { CHROME, GRID, WIRE, MATTE, GHOST };
+static int surface_kind;
 static void power(void) { quitting=1; }
 static void reset_button(u32 irq,void *ctx) { (void)irq; (void)ctx; quitting=1; }
 
+static u16 rgb565(float r,float g,float b) {
+    return ((u16)(clamp01(r)*31)<<11)|((u16)(clamp01(g)*63)<<5)|(u16)(clamp01(b)*31);
+}
 static void make_metal(void) {
     float phase=(synth.seed&65535)*0.000095875f;
-    int bands=4+2*(synth.seed%3);
-    float freq=(float[]){2.5f,6.0f,12.0f}[synth.frequency];
-    for(int y=0;y<64;y++) for(int x=0;x<64;x++) {
-        float u=(x-31.5f)/32,v=(y-31.5f)/32;
-        float light=0.5f+0.5f*cosf(freq*(u+0.62f*v+0.77f*sqrtf(fmaxf(0,1-u*u-v*v))));
-        int band=(int)(light*(bands-0.001f));
-        int r,g,b;
-        if(band==0 || band==bands/2) { r=0; g=0; b=0; }
-        else if(band==bands-1) { r=255; g=255; b=255; }
-        else {
-            float p=phase+band*2;
-            float cr=cosf(p),cg=cosf(p+2.094395f),cb=cosf(p+4.188790f);
-            float lo=fminf(cr,fminf(cg,cb)),hi=fmaxf(cr,fmaxf(cg,cb));
-            r=lroundf(255*(cr-lo)/(hi-lo));
-            g=lroundf(255*(cg-lo)/(hi-lo));
-            b=lroundf(255*(cb-lo)/(hi-lo));
+    float nr=0.5f+0.5f*cosf(phase),ng=0.5f+0.5f*cosf(phase+2.094395f),nb=0.5f+0.5f*cosf(phase+4.188790f);
+    float lo=fminf(nr,fminf(ng,nb)),hi=fmaxf(nr,fmaxf(ng,nb));
+    nr=(nr-lo)/(hi-lo); ng=(ng-lo)/(hi-lo); nb=(nb-lo)/(hi-lo);
+    for(int y=0;y<128;y++) for(int x=0;x<128;x++) {
+        float u=x/127.0f,v=y/127.0f,r,g,b;
+        if(synth.palette_count && synth.palette_count%4==0) {
+            float angle=atan2f(v-0.5f,u-0.5f)*2+v*7+phase;
+            r=0.5f+0.5f*cosf(angle); g=0.5f+0.5f*cosf(angle+2.094395f); b=0.5f+0.5f*cosf(angle+4.188790f);
+        } else {
+            float reflection=v<0.5f?powf(clamp01((v-0.20f)/0.24f),3):powf(clamp01((1-v)*1.6f),2);
+            float glow=0.25f+0.75f*fabsf(v-0.52f)*2;
+            r=nr*glow+(1-nr)*reflection; g=ng*glow+(1-ng)*reflection; b=nb*glow+(1-nb)*reflection;
         }
-        int index=((y/4)*16+x/4)*16+(y%4)*4+x%4;
-        metal_pixels[index]=((r>>3)<<11)|((g>>2)<<5)|(b>>3);
+        if(v>0.44f && v<0.50f) r=g=b=1;
+        if(v>=0.50f && v<0.58f) r=g=b=0;
+        int i=((y/4)*32+x/4)*16+(y%4)*4+x%4;
+        chrome_pixels[i]=rgb565(r,g,b);
     }
-    DCFlushRange(metal_pixels,sizeof(metal_pixels)); GX_InvalidateTexAll();
+    for(int y=0;y<64;y++) for(int x=0;x<64;x++) {
+        int edge=x<2||y<2||x>=62||y>=62;
+        int line=(x>=31&&x<=32)||(y>=31&&y<=32);
+        grid_pixels[((y/4)*16+x/4)*16+(y%4)*4+x%4]=edge?rgb565(nr,ng,nb):line?0xffff:0;
+    }
+    DCFlushRange(chrome_pixels,sizeof(chrome_pixels)); DCFlushRange(grid_pixels,sizeof(grid_pixels)); GX_InvalidateTexAll();
 }
 static void material(GXTexObj *texture) {
-    GX_SetNumTevStages(texture==&metal?2:1);
-    GX_ClearVtxDesc();
+    tint=(GXColor){255,255,255,255};
+    GX_SetNumTevStages(1); GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS,GX_DIRECT); GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);
-    GX_SetVtxDesc(GX_VA_TEX0,GX_DIRECT); GX_SetNumTexGens(texture==&metal?2:1);
+    GX_SetVtxDesc(GX_VA_TEX0,GX_DIRECT); GX_SetNumTexGens(texture?1:0);
     GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,GX_TG_TEX0,GX_IDENTITY);
-    GX_SetTevOrder(GX_TEVSTAGE0,GX_TEXCOORD0,GX_TEXMAP0,GX_COLOR0A0);
-    GX_SetTevOp(GX_TEVSTAGE0,GX_MODULATE); GX_LoadTexObj(texture,GX_TEXMAP0);
-    if(texture==&metal) {
+    GX_SetTevOrder(GX_TEVSTAGE0,texture?GX_TEXCOORD0:GX_TEXCOORDNULL,texture?GX_TEXMAP0:GX_TEXMAP_NULL,GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0,texture?GX_MODULATE:GX_PASSCLR);
+    if(texture) GX_LoadTexObj(texture,GX_TEXMAP0);
+}
+static void surface(int kind) {
+    surface_kind=kind;
+    material(kind==CHROME?&chrome_tex:kind==GRID?&grid_tex:kind==GHOST?&chrome_tex:NULL);
+    if(kind==MATTE) tint=(GXColor){0,0,0,255};
+    if(kind==WIRE) tint=(synth.seed&1)?(GXColor){0,255,255,255}:(GXColor){255,255,255,255};
+    if(kind==GHOST) {
+        GX_SetNumTevStages(2); GX_SetNumTexGens(2);
         Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=16;
         GX_LoadTexMtxImm(uv,GX_TEXMTX0,GX_MTX2x4);
         GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX0,GX_TEXMTX0);
@@ -66,35 +85,47 @@ static void material(GXTexObj *texture) {
 }
 static void vertex(Vec p,float u,float v,u8 shade,u8 alpha) {
     if(quantize_vertices) p=(Vec){snap_vertex(p.x),snap_vertex(p.y),snap_vertex(p.z)};
-    GX_Position3f32(p.x,p.y,p.z); GX_Color4u8(shade,shade,shade,alpha); GX_TexCoord2f32(u,v);
+    GX_Position3f32(p.x,p.y,p.z); GX_Color4u8(shade*tint.r/255,shade*tint.g/255,shade*tint.b/255,alpha); GX_TexCoord2f32(u,v);
 }
 static Vec add(Vec a,Vec b) { return (Vec){a.x+b.x,a.y+b.y,a.z+b.z}; }
 static Vec rotate(Vec p,float a,float b) {
     float x=p.x*cosf(a)+p.z*sinf(a),z=-p.x*sinf(a)+p.z*cosf(a);
     return (Vec){x,p.y*cosf(b)-z*sinf(b),p.y*sinf(b)+z*cosf(b)};
 }
+static Vec scale_vec(Vec p,float scale) { return (Vec){p.x*scale,p.y*scale,p.z*scale}; }
+static Vec unit(Vec p) {
+    float len=sqrtf(p.x*p.x+p.y*p.y+p.z*p.z);
+    return len>0.00001f?scale_vec(p,1/len):(Vec){0,1,0};
+}
+static Vec cross(Vec a,Vec b) { return (Vec){a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
+static void normal_vertex(Vec p,Vec n,u8 shade) {
+    float nx=view[0][0]*n.x+view[0][1]*n.y+view[0][2]*n.z;
+    float ny=view[1][0]*n.x+view[1][1]*n.y+view[1][2]*n.z;
+    vertex(p,0.5f+nx*0.48f,0.5f-ny*0.48f+(surface_kind==GRID?synth.draw.uv_shift*6:0),shade,255);
+}
 static void triangle(Vec a,Vec b,Vec c,u8 shade) {
-    Vec u={b.x-a.x,b.y-a.y,b.z-a.z},v={c.x-a.x,c.y-a.y,c.z-a.z};
-    Vec n={u.y*v.z-u.z*v.y,u.z*v.x-u.x*v.z,u.x*v.y-u.y*v.x};
-    float len=sqrtf(n.x*n.x+n.y*n.y+n.z*n.z);
-    if(len<0.00001f) return;
-    n.x/=len; n.y/=len;
-    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+    Vec n=unit(cross(add(b,scale_vec(a,-1)),add(c,scale_vec(a,-1))));
     Vec p[3]={a,b,c};
-    for(int i=0;i<3;i++) vertex(p[i],0.5f+n.x*0.85f+synth.draw.uv_shift+(i==1?0.22f:-0.12f),
-                              0.5f-n.y*0.85f+synth.draw.uv_shift+(i==2?0.22f:-0.12f),shade,255);
+    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
+    for(int i=0;i<3;i++) normal_vertex(p[i],n,shade);
     GX_End();
 }
-static void quad(Vec a,Vec b,Vec c,Vec d,u8 shade) { triangle(a,b,c,shade); triangle(a,c,d,shade); }
 static void box(Vec center,Vec size,float angle,u8 shade) {
-    float compression=1-0.82f*synth.tension;
-    float jitter=fmaxf(0,synth.tension-0.4f)*0.6f;
-    center.x=center.x*compression+jitter*sinf(synth.tick*2.4f+center.z);
-    center.y=center.y*compression+jitter*cosf(synth.tick*2.1f+center.z);
     Vec p[8];
     for(int i=0;i<8;i++) p[i]=add(center,rotate((Vec){i&1?size.x:-size.x,i&2?size.y:-size.y,i&4?size.z:-size.z},angle,angle*0.37f));
     static const int faces[24]={0,2,3,1,4,5,7,6,0,1,5,4,2,6,7,3,0,4,6,2,1,3,7,5};
-    for(int i=0;i<6;i++) quad(p[faces[i*4]],p[faces[i*4+1]],p[faces[i*4+2]],p[faces[i*4+3]],shade);
+    for(int f=0;f<6;f++) {
+        Vec a=p[faces[f*4]],b=p[faces[f*4+1]],c=p[faces[f*4+2]];
+        Vec n=unit(cross(add(b,scale_vec(a,-1)),add(c,scale_vec(a,-1))));
+        GX_Begin(GX_QUADS,GX_VTXFMT0,4);
+        for(int j=0;j<4;j++) {
+            Vec q=p[faces[f*4+j]];
+            if(surface_kind==GRID || surface_kind==GHOST)
+                vertex(q,(j==1||j==2)?1:0,(j>=2?1:0)+synth.draw.uv_shift*6,shade,255);
+            else normal_vertex(q,n,shade);
+        }
+        GX_End();
+    }
 }
 static void ortho(void) {
     quantize_vertices=0;
@@ -124,91 +155,109 @@ static void feedback_echo(void) {
 }
 static void projection(void) {
     quantize_vertices=synth.slow;
-    Mtx44 p;
-    guPerspective(p,synth.draw.fov,aspect,0.2f,180);
-    // Projection offsets follow the same eased pose as FOV and roll.
-    p[0][2]+=synth.draw.aim_x; p[1][2]+=synth.draw.aim_y;
+    Mtx44 p; guPerspective(p,synth.draw.fov,aspect,0.2f,220);
     GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
-    Mtx m; guVector axis={0,0,1}; guMtxRotAxisDeg(m,&axis,synth.draw.roll);
-    GX_LoadPosMtxImm(m,GX_PNMTX0);
+    Vec eye=orbit_eye(&synth.draw),target=synth.draw.look_at;
+    guVector e={eye.x,eye.y,eye.z},at={target.x,target.y,target.z},up={0,1,0};
+    Mtx look,bank; guLookAt(look,&e,&up,&at);
+    guVector axis={0,0,1}; guMtxRotAxisDeg(bank,&axis,synth.draw.roll);
+    guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
 }
-static Vec dome_point(int row,int col) {
-    float a=col*6.2831853f/16,b=row*3.14159265f/8;
-    float phase=synth.draw.phase;
-    float radius=fmaxf(70,fminf(140,105+18*sinf(a*3+b*4+phase*3)+synth.draw.burst*2*cosf(a*5-b*2)));
-    return (Vec){radius*sinf(b)*cosf(a),radius*cosf(b),radius*sinf(b)*sinf(a)};
-}
-static void dome(void) {
-    projection(); material(&metal); GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
-    int filled=synth.overdrive>0.55f || synth.gear>=2;
-    for(int row=0;row<8;row++) for(int col=0;col<16;col++) {
-        if(!filled && (row+col)%8!=0) continue;
-        Vec p[4]={dome_point(row,col),dome_point(row+1,col),dome_point(row+1,col+1),dome_point(row,col+1)};
-        GX_SetLineWidth(6,GX_TO_ZERO);
-        GX_Begin(filled?GX_QUADS:GX_LINESTRIP,GX_VTXFMT0,filled?4:5);
-        for(int j=0;j<(filled?4:5);j++) {
-            int i=j%4;
-            float len=sqrtf(p[i].x*p[i].x+p[i].y*p[i].y+p[i].z*p[i].z);
-            // Inward radial normals: the viewer is inside this environment shell.
-            vertex(p[i],0.5f-p[i].x/len*0.85f+synth.draw.uv_shift,
-                   0.5f+p[i].y/len*0.85f+synth.draw.uv_shift,(row+col+synth.cut)%6==0?0:255,255);
+static void torus(Vec center,float radius,float tube,float a,float b) {
+    surface(CHROME);
+    for(int i=0;i<32;i++) {
+        GX_Begin(GX_TRIANGLESTRIP,GX_VTXFMT0,26);
+        for(int j=0;j<=12;j++) for(int k=0;k<2;k++) {
+            float u=(i+k)*6.2831853f/32,v=j*6.2831853f/12;
+            Vec n={cosf(u)*cosf(v),sinf(u)*cosf(v),sinf(v)};
+            Vec p={(radius+tube*cosf(v))*cosf(u),(radius+tube*cosf(v))*sinf(u),tube*sinf(v)};
+            normal_vertex(add(center,rotate(p,a,b)),rotate(n,a,b),255);
         }
         GX_End();
     }
 }
-static Vec relative(Vec p) {
-    return (Vec){wrap(p.x-synth.draw.camera.x,96),wrap(p.y-synth.draw.camera.y,96),
-                 wrap(p.z-synth.draw.camera.z,96)-44};
+static void octahedron(Vec center,float size,float angle,int kind,int cage) {
+    const Vec axis[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    static const int faces[24]={0,2,4,2,1,4,1,3,4,3,0,4,2,0,5,1,2,5,3,1,5,0,3,5};
+    Vec p[6],n[6];
+    for(int i=0;i<6;i++) {
+        n[i]=rotate(axis[i],angle,angle*0.43f);
+        float spike=1+fminf(synth.draw.burst,4)*0.08f*(i%2?1:0.4f);
+        p[i]=add(center,scale_vec(n[i],size*spike));
+    }
+    surface(kind);
+    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,24);
+    for(int i=0;i<24;i++) normal_vertex(p[faces[i]],n[faces[i]],255);
+    GX_End();
+    if(!cage) return;
+    surface(WIRE); GX_SetLineWidth(10,GX_TO_ZERO); GX_SetPointSize(20,GX_TO_ZERO);
+    for(int shell=0;shell<2;shell++) {
+        for(int i=0;i<6;i++) p[i]=add(center,scale_vec(rotate(axis[i],-angle*(1+shell*0.4f),angle*0.7f+shell*0.5f),size*(1.25f+shell*0.3f)));
+        GX_Begin(GX_LINES,GX_VTXFMT0,24);
+        for(int i=0;i<6;i++) for(int j=i+1;j<6;j++) if(i/2!=j/2) {
+            vertex(p[i],0,0,255,255); vertex(p[j],0,0,255,255);
+        }
+        GX_End();
+        GX_Begin(GX_POINTS,GX_VTXFMT0,6);
+        for(int i=0;i<6;i++) vertex(p[i],0,0,255,255);
+        GX_End();
+    }
+}
+static void stellar(Vec center,float size,float angle) {
+    octahedron(center,size*0.65f,angle,CHROME,0);
+    for(int i=0;i<10;i++) {
+        float a=i*2.3999632f,y=1-2*(i+0.5f)/10;
+        Vec direction=rotate((Vec){sqrtf(1-y*y)*cosf(a),y,sqrtf(1-y*y)*sinf(a)},angle,angle*0.6f);
+        Vec tangent=unit(cross(direction,(Vec){0,1,0})),side=cross(direction,tangent);
+        Vec base=add(center,scale_vec(direction,size*0.45f));
+        Vec tip=add(center,scale_vec(direction,size*(2.1f+(i%3)*0.7f)));
+        Vec corner[4];
+        for(int j=0;j<4;j++) corner[j]=add(base,add(scale_vec(tangent,(j&1?1:-1)*size*0.23f),scale_vec(side,(j&2?1:-1)*size*0.23f)));
+        surface(i%4==0?MATTE:CHROME);
+        const int order[4]={0,1,3,2};
+        for(int j=0;j<4;j++) triangle(corner[order[j]],corner[order[(j+1)%4]],tip,255);
+    }
+}
+static void typo(Vec center,const char *word,float angle) {
+    surface(CHROME);
+    int count=strlen(word); float cell=8.5f/(count*6-1);
+    for(int k=0;k<count;k++) for(int row=0;row<5;row++) for(int col=0;col<5;col++)
+        if(font_glyph(word[k])[row]&(1<<(4-col))) {
+            Vec offset={(k*6+col-(count*6-2)*0.5f)*cell,(2-row)*cell,0};
+            box(add(center,rotate(offset,angle,angle*0.37f)),(Vec){cell*0.44f,cell*0.44f,cell*0.8f},angle,255);
+        }
 }
 static void mega(void) {
-    float phase=synth.draw.phase;
-    for(int layer=0;layer<6;layer++) {
-        Vec center=relative((Vec){0,0,layer*16});
-        u8 shade=layer%3==0?0:255;
-        if(synth.shape==4) {
-            if(layer%2) continue;
-            const char *word=(const char *[]){"HYPER","VOID","WII"}[layer/2];
-            int count=strlen(word);
-            for(int k=0;k<count;k++) for(int row=0;row<5;row++) for(int col=0;col<5;col++)
-                if(font_glyph(word[k])[row]&(1<<(4-col)))
-                    box(add(center,(Vec){(k*6+col-(count*6-2)*0.5f)*2.8f,(2-row)*2.8f,0}),
-                        (Vec){1.25f,1.25f,2.8f},0,255);
-        } else if(synth.shape==0) {
-            // Thick gate frames leave a readable opening to fly through.
-            box(add(center,(Vec){-10,0,0}),(Vec){1.8f,12,2.4f},0,shade);
-            box(add(center,(Vec){10,0,0}),(Vec){1.8f,12,2.4f},0,shade);
-            box(add(center,(Vec){0,12,0}),(Vec){11.8f,1.8f,2.4f},0,255);
-            box(add(center,(Vec){0,-12,0}),(Vec){11.8f,1.8f,2.4f},0,shade);
-        } else if(synth.shape==1) {
-            for(int j=0;j<10;j++) {
-                float a=j*6.2831853f/10+phase+layer*0.2f;
-                box(add(center,(Vec){12*cosf(a),12*sinf(a),0}),
-                    (Vec){2.8f,2.8f,3.2f},phase,(layer+j)%3==0?0:255);
-            }
-        } else if(synth.shape==2) {
-            for(int j=-1;j<=1;j++) {
-                box(add(center,(Vec){0,j*12,0}),(Vec){28,1.4f,1.4f},0,shade);
-                box(add(center,(Vec){j*12,0,0}),(Vec){1.4f,28,1.4f},0,255);
-                box(add(center,(Vec){j*12,j*12,0}),(Vec){1.4f,1.4f,12},0,shade);
-            }
-        } else {
-            for(int j=0;j<5;j++) {
-                float a=phase+layer*0.4f+j*0.6f;
-                box(add(center,(Vec){(j-2)*10,8*sinf(a),0}),
-                    (Vec){2.5f,9,3.5f},a,(j+layer)%3==0?0:255);
-            }
-        }
+    static const int arrangement[5][3]={{0,1,2},{0,0,0},{1,2,2},{2,0,1},{3,0,1}};
+    for(int i=0;i<3;i++) {
+        Vec center=synth.draw.objects[i];
+        float jitter=fmaxf(0,synth.tension-0.4f)*0.3f;
+        center.x+=jitter*sinf(synth.tick*2.4f+i); center.y+=jitter*cosf(synth.tick*2.1f+i);
+        float phase=synth.draw.phase*(i%2?-1:1)+i*0.8f;
+        int kind=arrangement[synth.shape][i];
+        float size=(i==0?1.35f:1.05f);
+        if(kind==0) {
+            torus(center,2.4f*size,0.85f*size,phase,phase*0.45f);
+            torus(center,1.5f*size,0.55f*size,-phase*1.3f,1.57f+phase*0.6f);
+        } else if(kind==1) octahedron(center,3*size,phase,i==2?MATTE:CHROME,1);
+        else if(kind==2) stellar(center,1.55f*size,phase);
+        else typo(center,(const char *[]){".+","HYPER","VOID"}[synth.cut%3],phase*0.3f);
     }
 }
 static void swarm(void) {
-    int count=24+synth.gear*16;
-    for(int i=0;i<count;i++) {
-        Vec center=relative((Vec){((i%4)-1.5f)*15,(((i/4)%3)-1)*18,(i/12)*16});
-        Vec size;
-        if(i%3==0) size=(Vec){1.8f,4.5f,1.8f};
-        else if(i%3==1) size=(Vec){0.9f,0.9f,9};
-        else size=(Vec){2.2f,2.2f,2.2f};
-        box(center,size,synth.motion_mode==2?0:synth.draw.phase+(i%7)*0.3f,i%3==0?0:255);
+    Vec eye=orbit_eye(&synth.draw);
+    Vec scroll=add(synth.draw.world_cam,eye);
+    for(int z=0;z<4;z++) for(int y=0;y<4;y++) for(int x=0;x<4;x++) {
+        Vec center=add(eye,lattice_relative((Vec){x*24,y*24,z*24},scroll));
+        // A protected sphere encloses all subjects, including the longest spikes and beams.
+        if(center.x*center.x+center.y*center.y+center.z*center.z<32*32) continue;
+        int index=x+y*4+z*16;
+        surface(index%7==0?MATTE:index%5==0?GHOST:GRID);
+        float width=0.6f+synth.overdrive*0.9f;
+        box(center,(Vec){12,width,width},0,255);
+        box(center,(Vec){width,12,width},0,255);
+        if(synth.gear>=1 || index%2==0) box(center,(Vec){width,width,12},0,255);
+        if(index%4==0) octahedron(center,3,synth.draw.phase*0.2f,index%8?GHOST:GRID,0);
     }
 }
 static void mask_rect(float x,float y,float w,float h) {
@@ -236,7 +285,7 @@ static void pixel_word(int pattern,float env) {
 static void overlay(void) {
     float env=synth.mask_env;
     if(env==0) return;
-    ortho(); material(&metal); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
+    ortho(); material(NULL); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
     GX_SetBlendMode(GX_BM_LOGIC,GX_BL_ONE,GX_BL_ZERO,GX_LO_INV);
     float t=synth.tick/60.0f,burst=fminf(synth.draw.burst,4);
     int pattern=synth.mask_pattern;
@@ -278,7 +327,7 @@ static void small_text(const char *text,float x,float y) {
             mask_rect(x+(i*6+col)*dot,y-(row+1)*dot*aspect,dot,dot*aspect);
 }
 static void telemetry(void) {
-    ortho(); material(&metal); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
+    ortho(); material(NULL); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
     GX_SetBlendMode(GX_BM_LOGIC,GX_BL_ONE,GX_BL_ZERO,GX_LO_INV);
     char text[40];
     float cruise=(float[]){3,12,36,72}[synth.gear]*synth.boost;
@@ -296,9 +345,8 @@ static void telemetry(void) {
 }
 static void render(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
-    dome();
-    projection(); material(&metal); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    mega(); swarm();
+    projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
+    swarm(); mega();
     // Capture the clean scene before masks/UI, avoiding recursive color contamination.
     if(synth.draw.burst>0.5f || synth.tension>0.3f) {
         GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
@@ -336,8 +384,10 @@ int main(void) {
     GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX0,GX_TEX_ST,GX_F32,0);
     GX_SetNumChans(1); GX_SetNumTevStages(1);
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
-    GX_InitTexObj(&metal,metal_pixels,64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_FALSE);
-    GX_InitTexObjLOD(&metal,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
+    GX_InitTexObj(&chrome_tex,chrome_pixels,128,128,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
+    GX_InitTexObjLOD(&chrome_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
+    GX_InitTexObj(&grid_tex,grid_pixels,64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_FALSE);
+    GX_InitTexObjLOD(&grid_tex,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_InitTexObj(&history,history_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&history,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_SetTexCopySrc(0,0,mode->fbWidth,mode->efbHeight);
