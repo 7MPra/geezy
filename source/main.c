@@ -7,6 +7,7 @@
 #include "state.h"
 #include "font.h"
 #include "chrome.h"
+#include "grid.h"
 #include <stdio.h>
 
 static Synth synth;
@@ -14,7 +15,7 @@ static volatile int quitting;
 static GXRModeObj *mode;
 static GXTexObj chrome_tex, grid_tex, history, dither_tex;
 static u16 chrome_pixels[128*128] ATTRIBUTE_ALIGN(32);
-static u16 grid_pixels[64*64] ATTRIBUTE_ALIGN(32);
+static u16 grid_pixels[GRID_TEXELS] ATTRIBUTE_ALIGN(32);
 static u8 dither_pixels[64] ATTRIBUTE_ALIGN(32);
 static void *history_pixels;
 static int quantize_vertices;
@@ -52,6 +53,7 @@ static void make_metal(void) {
         int line=(x>=31&&x<=32)||(y>=31&&y<=32);
         grid_pixels[((y/4)*16+x/4)*16+(y%4)*4+x%4]=edge?rgb565(nr,ng,nb):line?0xffff:0;
     }
+    grid_mipmaps(grid_pixels);
     DCFlushRange(chrome_pixels,sizeof(chrome_pixels)); DCFlushRange(grid_pixels,sizeof(grid_pixels)); GX_InvalidateTexAll();
 }
 static void material(GXTexObj *texture) {
@@ -243,21 +245,70 @@ static void mega(void) {
         else typo(center,(const char *[]){".+","HYPER","VOID"}[synth.cut%3],phase*0.3f);
     }
 }
+static void rail_segment(Vec fixed,Vec eye,int axis,float start,float end,float width,float world,float flow) {
+    if(end<=start) return;
+    int steps=(int)ceilf((end-start)/24);
+    const int corner[4][2]={{-1,-1},{1,-1},{1,1},{-1,1}};
+    // Open side walls: no coincident end caps at tile boundaries or crossings.
+    for(int i=0;i<steps;i++) {
+        float a=start+(end-start)*i/steps,b=start+(end-start)*(i+1)/steps;
+        Vec mid=fixed;
+        if(axis==0) mid.x=(a+b)*0.5f;
+        else if(axis==1) mid.y=(a+b)*0.5f;
+        else mid.z=(a+b)*0.5f;
+        float depth=view[2][0]*mid.x+view[2][1]*mid.y+view[2][2]*mid.z+view[2][3];
+        if(depth>fabsf(view[2][axis])*(b-a)*0.5f+width*2) continue;
+        Vec p[8]; u8 shade[8];
+        for(int j=0;j<8;j++) {
+            int c=j%4; float along=j<4?a:b;
+            p[j]=fixed;
+            if(axis==0) { p[j].x=along; p[j].y+=corner[c][0]*width; p[j].z+=corner[c][1]*width; }
+            else if(axis==1) { p[j].y=along; p[j].z+=corner[c][0]*width; p[j].x+=corner[c][1]*width; }
+            else { p[j].z=along; p[j].x+=corner[c][0]*width; p[j].y+=corner[c][1]*width; }
+            shade[j]=(u8)(255*lattice_fade(p[j],eye));
+        }
+        GX_Begin(GX_QUADS,GX_VTXFMT0,16);
+        for(int side=0;side<4;side++) for(int j=0;j<4;j++) {
+            int c=(side+(j==1||j==2))%4+(j>=2?4:0);
+            vertex(p[c],(j==1||j==2)?1:0,((j<2?a:b)+world)/24+flow,shade[c],255);
+        }
+        GX_End();
+    }
+}
 static void swarm(void) {
     Vec eye=orbit_eye(&synth.draw);
-    Vec scroll=add(synth.draw.world_cam,eye);
-    for(int z=0;z<4;z++) for(int y=0;y<4;y++) for(int x=0;x<4;x++) {
-        Vec center=add(eye,lattice_relative((Vec){x*24,y*24,z*24},scroll));
-        // A protected sphere encloses all subjects, including the longest spikes and beams.
-        if(center.x*center.x+center.y*center.y+center.z*center.z<32*32) continue;
-        int index=x+y*4+z*16;
-        surface(index%7==0?MATTE:index%5==0?GHOST:GRID);
-        float width=0.6f+synth.overdrive*0.9f;
-        box(center,(Vec){12,width,width},0,255);
-        box(center,(Vec){width,12,width},0,255);
-        if(synth.gear>=1 || index%2==0) box(center,(Vec){width,width,12},0,255);
-        if(index%4==0) octahedron(center,3,synth.draw.phase*0.2f,index%8?GHOST:GRID,0);
+    Vec world=synth.slow?synth.draw.world_cam:synth.live.world_cam;
+    float flow=(synth.slow?synth.draw.uv_shift:synth.live.uv_shift)*2;
+    quantize_vertices=0; surface(GRID);
+    for(int axis=0;axis<3;axis++) for(int i=0;i<8;i++) for(int j=0;j<8;j++) {
+        Vec fixed={0,0,0}; float origin,scroll,perp,view_perp;
+        if(axis==0) {
+            fixed.y=lattice_axis(i,world.y,eye.y); fixed.z=lattice_axis(j,world.z,eye.z);
+            origin=eye.x; scroll=world.x;
+            perp=fixed.y*fixed.y+fixed.z*fixed.z;
+            view_perp=(fixed.y-eye.y)*(fixed.y-eye.y)+(fixed.z-eye.z)*(fixed.z-eye.z);
+        } else if(axis==1) {
+            fixed.z=lattice_axis(i,world.z,eye.z); fixed.x=lattice_axis(j,world.x,eye.x);
+            origin=eye.y; scroll=world.y;
+            perp=fixed.z*fixed.z+fixed.x*fixed.x;
+            view_perp=(fixed.z-eye.z)*(fixed.z-eye.z)+(fixed.x-eye.x)*(fixed.x-eye.x);
+        } else {
+            fixed.x=lattice_axis(i,world.x,eye.x); fixed.y=lattice_axis(j,world.y,eye.y);
+            origin=eye.z; scroll=world.z;
+            perp=fixed.x*fixed.x+fixed.y*fixed.y;
+            view_perp=(fixed.x-eye.x)*(fixed.x-eye.x)+(fixed.y-eye.y)*(fixed.y-eye.y);
+        }
+        if(view_perp>86*86) continue; // Already fully black before a rail is recycled.
+        float reach=sqrtf(86*86-view_perp);
+        float start=origin-reach,end=origin+reach;
+        float width=(0.65f+synth.overdrive*0.5f)*(1+axis*0.12f);
+        if(perp<20*20) {
+            float hole=sqrtf(20*20-perp);
+            rail_segment(fixed,eye,axis,start,fminf(end,-hole),width,scroll,flow);
+            rail_segment(fixed,eye,axis,fmaxf(start,hole),end,width,scroll,flow);
+        } else rail_segment(fixed,eye,axis,start,end,width,scroll,flow);
     }
+    quantize_vertices=synth.slow;
 }
 static void mask_rect(float x,float y,float w,float h) {
     GX_Begin(GX_QUADS,GX_VTXFMT0,4);
@@ -345,13 +396,22 @@ static void telemetry(void) {
 static void render(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    swarm(); mega();
+    swarm();
+#ifndef GEEZY_LATTICE_CHECK
+    mega();
+#else
+    (void)mega;
+#endif
     // Capture the clean scene before masks/UI, avoiding recursive color contamination.
     if(synth.draw.burst>0.5f || synth.tension>0.3f) {
         GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
         feedback_echo();
     }
+#ifndef GEEZY_LATTICE_CHECK
     overlay(); telemetry();
+#else
+    (void)overlay; (void)telemetry;
+#endif
 }
 
 int main(void) {
@@ -385,8 +445,8 @@ int main(void) {
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
     GX_InitTexObj(&chrome_tex,chrome_pixels,128,128,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&chrome_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
-    GX_InitTexObj(&grid_tex,grid_pixels,64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_FALSE);
-    GX_InitTexObjLOD(&grid_tex,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
+    GX_InitTexObj(&grid_tex,grid_pixels,64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_TRUE);
+    GX_InitTexObjLOD(&grid_tex,GX_LIN_MIP_LIN,GX_LINEAR,0,6,0,GX_TRUE,GX_TRUE,GX_ANISO_4);
     GX_InitTexObj(&history,history_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&history,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_SetTexCopySrc(0,0,mode->fbWidth,mode->efbHeight);
@@ -407,6 +467,10 @@ int main(void) {
         u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
+#ifdef GEEZY_LATTICE_CHECK
+        down=held=0;
+        if(check_frame==0) { reset(&synth); synth.gear=2; steer(&synth,1,1); }
+#else
         // Exercise button-only gestures without desktop key injection.
         unsigned stage=(check_frame/300)%6, beat=check_frame%300;
         down=0; held=0;
@@ -421,6 +485,7 @@ int main(void) {
         if(beat>=30 && beat<90) held|=WPAD_BUTTON_DOWN;
         if(beat>=90 && beat<210) held|=WPAD_BUTTON_A;
         if(beat>=240 && beat<280) { held|=WPAD_BUTTON_B; synth.mask_pattern=4+stage; }
+#endif
         check_frame++;
 #endif
         if(down&WPAD_BUTTON_HOME) break;

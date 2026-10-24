@@ -2,6 +2,7 @@
 #include "../source/state.h"
 #include "../source/font.h"
 #include "../source/chrome.h"
+#include "../source/grid.h"
 static int closef(float a,float b) { return fabsf(a-b)<0.001f; }
 int main(void) {
     Synth s; reset(&s);
@@ -187,9 +188,35 @@ int main(void) {
 
         }
     }
-    Vec cell=lattice_relative((Vec){24,48,72},(Vec){18,-3,42});
-    Vec repeat=lattice_relative((Vec){24,48,72},(Vec){18+96,-3-96,42+96});
-    assert(closef(cell.x,repeat.x) && closef(cell.y,repeat.y) && closef(cell.z,repeat.z));
+    // The visible rail set survives both recycling and the world's 96-unit wrap.
+    for(int axis=0;axis<3;axis++) for(int i=0;i<8;i++) {
+        float coord=lattice_axis(i,18+axis*11,7);
+        int found=0;
+        for(int j=0;j<8;j++) if(closef(coord,lattice_axis(j,18+axis*11+96,7))) found=1;
+        assert(found);
+        assert(closef(lattice_axis(i,18+axis*11,7),lattice_axis(i,18+axis*11+192,7)));
+    }
+    for(int i=0;i<8;i++) for(int t=0;t<1000;t++) {
+        float before=lattice_axis(i,t*0.5f,7),after=lattice_axis(i,t*0.5f+0.01f,7);
+        if(fabsf(after-before)>1) {
+            assert(lattice_fade((Vec){before,0,16},(Vec){7,0,16})==0);
+            assert(lattice_fade((Vec){after,0,16},(Vec){7,0,16})==0);
+        } else assert(closef(after-before,-0.01f));
+    }
+    Vec eye={0,0,16};
+    assert(lattice_fade((Vec){0,0,20},eye)==0);
+    assert(lattice_fade((Vec){0,0,100},eye)==0);
+    assert(lattice_fade((Vec){0,0,44},eye)==1);
+    assert(lattice_fade((Vec){0,0,20.01f},eye)<0.00001f);
+    assert(lattice_fade((Vec){0,0,99.99f},eye)<0.00001f);
+    uint16_t mip[GRID_TEXELS+1]={0};
+    for(int i=0;i<4096;i++) mip[i]=0xffff;
+    mip[GRID_TEXELS]=0x1234; grid_mipmaps(mip);
+    assert(mip[GRID_TEXELS]==0x1234 && mip[GRID_TEXELS-16]==0xffff);
+    for(int y=0;y<64;y++) for(int x=0;x<64;x++) mip[grid_index(64,x,y)]=(x+y)%2?0xffff:0;
+    grid_mipmaps(mip);
+    uint16_t average=(15<<11)|(31<<5)|15;
+    assert(mip[4096]==average && mip[GRID_TEXELS-16]==average);
     reset(&a);
     for(int i=1;i<=12;i++) { palette_next(&a); assert(a.palette_count==(unsigned)i); }
     for(int i=-300;i<=300;i++) {

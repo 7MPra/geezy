@@ -34,8 +34,15 @@ static inline Vec formation(int index,int variant) {
     static const Vec offsets[3]={{-5,-2,2},{5,3,-1},{1,-1,-5}};
     return offsets[(index+variant)%3];
 }
-static inline Vec lattice_relative(Vec point,Vec world_cam) {
-    return (Vec){wrap(point.x-world_cam.x,96),wrap(point.y-world_cam.y,96),wrap(point.z-world_cam.z,96)};
+static inline float lattice_axis(int index,float world,float eye) {
+    return eye+wrap(index*24-world-eye,192);
+}
+static inline float lattice_fade(Vec p,Vec eye) {
+    float near=sqrtf(p.x*p.x+p.y*p.y+p.z*p.z);
+    float x=p.x-eye.x,y=p.y-eye.y,z=p.z-eye.z;
+    float far=sqrtf(x*x+y*y+z*z);
+    float a=clamp01((near-20)/12),b=clamp01((84-far)/24);
+    return a*a*(3-2*a)*b*b*(3-2*b);
 }
 static inline void sample_pose(Synth *s) {
     s->live.radius=dolly_radius(s->live.fov);
