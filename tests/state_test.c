@@ -71,7 +71,7 @@ int main(void) {
             if(mode==2) assert(x+y+z<=1);
             axes|=x|(y<<1)|(z<<2);
             assert(isfinite(s.live.world_cam.x) && isfinite(s.live.world_cam.y) && isfinite(s.live.world_cam.z));
-            assert(fabsf(s.live.aim_x)<=0.35f);
+            assert(fabsf(s.live.aim_x)<=1.6f);
         }
         assert(axes==7);
     }
@@ -115,6 +115,55 @@ int main(void) {
         advance(&a,1.0f/60,0,1,0); advance(&b,1.0f/60,0,1,0);
         assert(closef(a.draw.objects[0].x,b.draw.objects[0].x));
         assert(closef(orbit_eye(&a.draw).z,orbit_eye(&b.draw).z));
+    }
+    // Holding direction speeds up the subjects as well as the world; release settles both.
+    reset(&a); reset(&b); a.gear=3; b.gear=3;
+    for(int i=0;i<120;i++) { advance(&a,1.0f/60,0,0,0); advance(&b,1.0f/60,0,1,0); }
+    float pa=a.live.phase,pb=b.live.phase;
+    advance(&a,1.0f/60,0,0,0); advance(&b,1.0f/60,0,1,0);
+    float idle_spin=wrap(a.live.phase-pa,6.2831853f),boost_spin=wrap(b.live.phase-pb,6.2831853f);
+    assert(boost_spin>idle_spin*4 && boost_spin<0.15f);
+    for(int i=0;i<120;i++) advance(&b,1.0f/60,0,0,0);
+    pb=b.live.phase; advance(&b,1.0f/60,0,0,0);
+    assert(closef(wrap(b.live.phase-pb,6.2831853f),idle_spin));
+    hit(&a,1); pa=a.live.phase; advance(&a,1.0f/60,0,0,0);
+    assert(fabsf(wrap(a.live.phase-pa,6.2831853f))>idle_spin*10);
+    // Fractional-rate object axes remain continuous across phase recycling.
+    for(int i=0;i<100;i++) {
+        float ratio=i/100.0f,old=314.158f,next=wrap_phase(old+0.002f);
+        assert(fabsf(sinf(next*ratio)-sinf((old+0.002f)*ratio))<0.0001f);
+        assert(fabsf(cosf(next*ratio)-cosf((old+0.002f)*ratio))<0.0001f);
+    }
+    // Aim offsets actually change the viewing ray without moving the orbital eye.
+    reset(&a); Vec neutral_eye=orbit_eye(&a.live),neutral_target=view_target(&a.live);
+    a.live.aim_x=1;
+    assert(closef(orbit_eye(&a.live).x,neutral_eye.x));
+    assert(view_target(&a.live).x>neutral_target.x+13);
+    reset(&a); steer(&a,1,0);
+    for(int i=0;i<60;i++) advance(&a,1.0f/60,0,1,0);
+    assert(a.live.aim_x>0.59f && a.live.aim_x<0.61f);
+    for(int i=0;i<60;i++) advance(&a,1.0f/60,0,1,1);
+    assert(a.live.aim_x>1.4f);
+    for(int i=0;i<60;i++) advance(&a,1.0f/60,0,0,0);
+    assert(fabsf(a.live.aim_x)<0.001f);
+    for(int i=0;i<100;i++) { hit(&a,1); assert(a.mask_pattern>=0 && a.mask_pattern<4); }
+    // Each shard is periodic in all axes; a recycled shard is already invisible.
+    Vec particle_eye={3,4,16};
+    for(int axis=0;axis<3;axis++) for(int i=0;i<192;i++) {
+        Vec world={17,25,-31},shift=world;
+        if(axis==0) shift.x+=96; else if(axis==1) shift.y+=96; else shift.z+=96;
+        Vec p=tunnel_particle(i,world,particle_eye),q=tunnel_particle(i,shift,particle_eye);
+        assert(closef(p.x,q.x) && closef(p.y,q.y) && closef(p.z,q.z));
+        for(int tick=0;tick<192;tick++) {
+            Vec w={0,0,0},v={0,0,0};
+            if(axis==0) { w.x=tick*0.5f; v.x=w.x+0.01f; }
+            else if(axis==1) { w.y=tick*0.5f; v.y=w.y+0.01f; }
+            else { w.z=tick*0.5f; v.z=w.z+0.01f; }
+            p=tunnel_particle(i,w,particle_eye); q=tunnel_particle(i,v,particle_eye);
+            if(fabsf(p.x-q.x)+fabsf(p.y-q.y)+fabsf(p.z-q.z)>1) {
+                assert(particle_fade(p,particle_eye)==0 && particle_fade(q,particle_eye)==0);
+            } else assert(closef(fabsf(p.x-q.x)+fabsf(p.y-q.y)+fabsf(p.z-q.z),0.01f));
+        }
     }
     // Shortest-arc springs share the exact damping/stiffness on all angle axes.
     float velocity_test=0.2f;

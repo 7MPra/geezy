@@ -4,7 +4,7 @@
 #include <stdint.h>
 typedef struct { float x,y,z; } Vec;
 typedef struct {
-    Vec world_cam, look_at, objects[3];
+    Vec world_cam, look_at, objects[3], travel;
     float phase, roll, aim_x, aim_y, fov, burst, uv_shift, azimuth, elevation, radius;
 } Pose;
 typedef struct {
@@ -18,6 +18,8 @@ typedef struct {
     uint32_t seed;
 } Synth;
 static inline float wrap(float x,float span) { return x-span*floorf(x/span+0.5f); }
+// The object axes use hundredth-turn ratios; recycle only when every axis agrees.
+static inline float wrap_phase(float x) { return wrap(x,628.31853f); }
 static inline float clamp01(float x) { return fmaxf(0,fminf(1,x)); }
 static inline float snap_vertex(float x) { return roundf(x*1.5f)/1.5f; }
 static inline float dolly_radius(float fov) {
@@ -29,6 +31,33 @@ static inline Vec orbit_eye(const Pose *p) {
     return (Vec){p->look_at.x+p->radius*cosf(p->elevation)*sinf(p->azimuth),
                  p->look_at.y+p->radius*sinf(p->elevation),
                  p->look_at.z+p->radius*cosf(p->elevation)*cosf(p->azimuth)};
+}
+// Orbit around the subject, but pan independently in the camera's screen plane.
+static inline Vec camera_up(const Pose *p) {
+    return (Vec){-sinf(p->elevation)*sinf(p->azimuth),cosf(p->elevation),-sinf(p->elevation)*cosf(p->azimuth)};
+}
+static inline Vec view_target(const Pose *p) {
+    Vec right={cosf(p->azimuth),0,-sinf(p->azimuth)},up=camera_up(p);
+    float roll=p->roll*0.0174532925f;
+    float x=p->aim_x*cosf(roll)+p->aim_y*sinf(roll);
+    float y=-p->aim_x*sinf(roll)+p->aim_y*cosf(roll);
+    float extent=p->radius*tanf(p->fov*0.008726646f);
+    return (Vec){p->look_at.x+extent*(right.x*x+up.x*y),
+                 p->look_at.y+extent*(right.y*x+up.y*y),
+                 p->look_at.z+extent*(right.z*x+up.z*y)};
+}
+static inline Vec tunnel_particle(int index,Vec world,Vec eye) {
+    int ring=index/16;
+    float angle=(index%16)*6.2831853f/16, radius=22+(ring%3)*4;
+    return (Vec){eye.x+wrap(radius*cosf(angle)-world.x-eye.x,96),
+                 eye.y+wrap(radius*sinf(angle)-world.y-eye.y,96),
+                 eye.z+wrap(ring*8-world.z-eye.z,96)};
+}
+static inline float particle_fade(Vec p,Vec eye) {
+    float x=p.x-eye.x,y=p.y-eye.y,z=p.z-eye.z;
+    float distance=sqrtf(x*x+y*y+z*z),center=sqrtf(p.x*p.x+p.y*p.y+p.z*p.z);
+    float a=clamp01((44-distance)/12),b=clamp01((center-12)/6),c=clamp01((distance-3)/5);
+    return a*a*(3-2*a)*b*b*(3-2*b)*c*c*(3-2*c);
 }
 static inline Vec formation(int index,int variant) {
     static const Vec offsets[3]={{-5,-2,2},{5,3,-1},{1,-1,-5}};
@@ -77,7 +106,7 @@ static inline void hit(Synth *s,float strength) {
     s->spin_velocity+=((s->cut&1)?-22:22)*strength;
     s->burst_velocity+=32*strength;
     s->cut=(s->cut+1)%4;
-    s->mask_pattern=(s->mask_pattern+1)%10;
+    s->mask_pattern=(s->mask_pattern+1)%4;
     s->target_fov=(s->cut&1)?105:55;
     s->target_roll=(float[]){0,45,-60,90}[s->cut];
     s->target_aim_x=(float[]){0,0.3f,-0.3f,0.15f}[s->cut];
@@ -125,6 +154,7 @@ static inline void move_camera(Synth *s,float cruise) {
         float length=sqrtf(direction.x*direction.x+direction.y*direction.y+direction.z*direction.z);
         delta=(Vec){direction.x*speed/(60*length),direction.y*speed/(60*length),direction.z*speed/(60*length)};
     }
+    s->live.travel=delta;
     s->live.world_cam.x=wrap(s->live.world_cam.x+delta.x,96);
     s->live.world_cam.y=wrap(s->live.world_cam.y+delta.y,96);
     s->live.world_cam.z=wrap(s->live.world_cam.z+delta.z,96);
@@ -178,14 +208,16 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         if(slow) s->tension=clamp01(s->tension+1.0f/120);
         if(!slow) {
             float whip=s->motion_mode==3?0.2f*sinf(s->motion_phase*2):0;
-            float aim=fmaxf(-0.35f,fminf(0.35f,s->target_aim_x+whip));
+            float reach=boosting?(accent?2.0f:0.85f):0;
+            float aim=fmaxf(-1.6f,fminf(1.6f,s->target_aim_x+whip+s->flow.x*reach));
+            float aim_y=fmaxf(-1.6f,fminf(1.6f,s->target_aim_y+s->flow.y*reach));
             s->live.fov+=(s->target_fov-s->live.fov)*0.28f;
 
             s->live.aim_x+=(aim-s->live.aim_x)*0.28f;
-            s->live.aim_y+=(s->target_aim_y-s->live.aim_y)*0.28f;
+            s->live.aim_y+=(aim_y-s->live.aim_y)*0.28f;
             float cruise=(float[]){3,12,36,72}[s->gear]*s->boost;
             move_camera(s,cruise);
-            s->live.phase=wrap(s->live.phase+(s->spin_velocity+0.15f+s->gear*0.2f)/60,6.2831853f);
+            s->live.phase=wrap_phase(s->live.phase+(s->spin_velocity+0.15f+cruise/60)/60);
             s->live.uv_shift=wrap(s->live.uv_shift+(0.04f+s->gear*0.04f)/60,1);
         }
         s->live.burst=(s->live.burst+s->burst_velocity/60)*0.86f;
@@ -204,7 +236,7 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
             s->live.world_cam.x=wrap(s->live.world_cam.x+s->stutter_flow.x*step*0.9f,96);
             s->live.world_cam.y=wrap(s->live.world_cam.y+s->stutter_flow.y*step*0.9f,96);
             s->live.world_cam.z=wrap(s->live.world_cam.z+s->stutter_flow.z*step*0.9f,96);
-            s->live.phase=wrap(s->stutter_anchor.phase+step*0.12f,6.2831853f);
+            s->live.phase=wrap_phase(s->stutter_anchor.phase+step*0.12f);
             s->live.fov=80-s->tension*42;
             s->live.uv_shift=wrap(s->stutter_anchor.uv_shift+s->tension*s->stutter_tick*0.035f,1);
         }
@@ -212,6 +244,7 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         s->bank=s->bank*0.86f+(boosting?-s->flow.x*22:0)*0.14f;
         update_rig(s);
         s->target_roll*=0.86f;
+        s->target_aim_x*=0.86f; s->target_aim_y*=0.86f;
         if(slow ? s->stutter_tick%8==0 : s->sample_tick>=3) sample_pose(s);
     }
 }

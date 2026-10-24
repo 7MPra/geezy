@@ -158,8 +158,8 @@ static void projection(void) {
     quantize_vertices=synth.slow;
     Mtx44 p; guPerspective(p,synth.draw.fov,aspect,0.2f,220);
     GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
-    Vec eye=orbit_eye(&synth.draw),target=synth.draw.look_at;
-    guVector e={eye.x,eye.y,eye.z},at={target.x,target.y,target.z},up={0,1,0};
+    Vec eye=orbit_eye(&synth.draw),target=view_target(&synth.draw),vertical=camera_up(&synth.draw);
+    guVector e={eye.x,eye.y,eye.z},at={target.x,target.y,target.z},up={vertical.x,vertical.y,vertical.z};
     Mtx look,bank; guLookAt(look,&e,&up,&at);
     guVector axis={0,0,1}; guMtxRotAxisDeg(bank,&axis,synth.draw.roll);
     guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
@@ -219,14 +219,14 @@ static void stellar(Vec center,float size,float angle) {
         for(int j=0;j<4;j++) triangle(corner[order[j]],corner[order[(j+1)%4]],tip,255);
     }
 }
-static void typo(Vec center,const char *word,float angle) {
+static void frame_cluster(Vec center,float angle) {
     surface(CHROME);
-    int count=strlen(word); float cell=8.5f/(count*6-1);
-    for(int k=0;k<count;k++) for(int row=0;row<5;row++) for(int col=0;col<5;col++)
-        if(font_glyph(word[k])[row]&(1<<(4-col))) {
-            Vec offset={(k*6+col-(count*6-2)*0.5f)*cell,(2-row)*cell,0};
-            box(add(center,rotate(offset,angle,angle*0.37f)),(Vec){cell*0.44f,cell*0.44f,cell*0.8f},angle,255);
-        }
+    for(int shell=0;shell<2;shell++) for(int side=0;side<4;side++) {
+        float a=angle*(shell?-1:1),radius=2.8f-shell*0.9f;
+        Vec offset={side<2?(side?radius:-radius):0,side>=2?(side==3?radius:-radius):0,0};
+        Vec size=side<2?(Vec){0.4f,radius+0.4f,0.55f}:(Vec){radius-0.4f,0.4f,0.55f};
+        box(add(center,rotate(offset,a,a*0.37f)),size,a,255);
+    }
 }
 static void mega(void) {
     static const int arrangement[5][3]={{0,1,2},{0,0,0},{1,2,2},{2,0,1},{3,0,1}};
@@ -242,7 +242,7 @@ static void mega(void) {
             torus(center,1.5f*size,0.55f*size,-phase*1.3f,1.57f+phase*0.6f);
         } else if(kind==1) octahedron(center,3*size,phase,i==2?MATTE:CHROME,1);
         else if(kind==2) stellar(center,1.55f*size,phase);
-        else typo(center,(const char *[]){".+","HYPER","VOID"}[synth.cut%3],phase*0.3f);
+        else frame_cluster(center,phase);
     }
 }
 static void rail_segment(Vec fixed,Vec eye,int axis,float start,float end,float width,float world,float flow) {
@@ -310,27 +310,34 @@ static void swarm(void) {
     }
     quantize_vertices=synth.slow;
 }
+static void vector_tunnel(void) {
+    const Pose *p=synth.slow?&synth.draw:&synth.live;
+    Vec eye=orbit_eye(&synth.draw),direction=unit(p->travel);
+    float distance=sqrtf(p->travel.x*p->travel.x+p->travel.y*p->travel.y+p->travel.z*p->travel.z);
+    if(distance<0.0001f) direction=synth.flow;
+    Vec tangent=unit(cross(direction,fabsf(direction.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0}));
+    Vec side=cross(direction,tangent);
+    float length=0.7f+fminf(distance,2.8f);
+    // Fixed world-space rings; fade completely before recycling any axis.
+    quantize_vertices=0; surface(WIRE);
+    for(int i=0;i<192;i++) {
+        Vec center=tunnel_particle(i,p->world_cam,eye);
+        float fade=particle_fade(center,eye);
+        if(fade<0.004f) continue;
+        u8 shade=(u8)(fade*255);
+        Vec tip=add(center,scale_vec(direction,-length));
+        Vec tail=add(center,scale_vec(direction,length));
+        Vec a=add(tail,scale_vec(tangent,0.32f)),b=add(tail,scale_vec(tangent,-0.32f));
+        Vec c=add(tail,scale_vec(side,0.32f));
+        triangle(tip,a,c,shade); triangle(tip,c,b,shade); triangle(tip,b,a,shade);
+    }
+    quantize_vertices=synth.slow;
+}
 static void mask_rect(float x,float y,float w,float h) {
     GX_Begin(GX_QUADS,GX_VTXFMT0,4);
     vertex((Vec){x,y,-1},0,0,255,255); vertex((Vec){x+w,y,-1},1,0,255,255);
     vertex((Vec){x+w,y+h,-1},1,1,255,255); vertex((Vec){x,y+h,-1},0,1,255,255);
     GX_End();
-}
-static void pixel_word(int pattern,float env) {
-    const char *word=(const char *[]){"HYPER","VOID","ERR","WII","01",">>>"}[pattern-4];
-    int count=strlen(word);
-    float cell=1.85f/(count*6-1);
-    for(int i=0;i<count;i++) {
-        float part=clamp01((env-i*0.06f)/(1-i*0.06f));
-        const uint8_t *glyph=font_glyph(word[i]);
-        float x=-0.925f+i*6*cell;
-        float y=2.5f*cell*aspect+(1-part)*(i%2?1.2f:-1.2f);
-        for(int row=0;row<5;row++) for(int col=0;col<5;col++) {
-            if(glyph[row]&(1<<(4-col)))
-                mask_rect(x+(col+(1-part)*0.5f)*cell,y-(row+1)*cell*aspect,
-                          cell*part,cell*aspect*part);
-        }
-    }
 }
 static void overlay(void) {
     float env=synth.mask_env;
@@ -341,8 +348,8 @@ static void overlay(void) {
     int pattern=synth.mask_pattern;
     float angle=0,scale=1,tx=0,ty=0;
     if(pattern==1) { tx=fmodf(t*1.7f,0.5f); ty=fmodf(t*1.1f,0.5f); }
-    if(pattern==2) angle=-synth.draw.roll+synth.draw.phase*30;
-    if(pattern==3) { angle=synth.draw.phase*45; scale=env*(0.6f+fmodf(t*1.8f,1.5f)+burst*0.12f); tx=wrap(t*2,3); }
+    if(pattern==2) angle=-synth.draw.roll+synth.draw.phase*57.2957795f;
+    if(pattern==3) { angle=synth.draw.phase*57.2957795f; scale=env*(0.6f+fmodf(t*1.8f,1.5f)+burst*0.12f); tx=wrap(t*2,3); }
     Mtx m; guVector axis={0,0,1}; guMtxRotAxisDeg(m,&axis,angle);
     guMtxScaleApply(m,m,scale,scale,1); guMtxTransApply(m,m,tx,ty,0);
     GX_LoadPosMtxImm(m,GX_PNMTX0);
@@ -366,7 +373,6 @@ static void overlay(void) {
         vertex((Vec){-1,-1,-1},0,0,255,255); vertex((Vec){1,-1,-1},0,0,255,255); vertex((Vec){1,1,-1},0,0,255,255);
         GX_End();
         break;
-    default: pixel_word(pattern,env); break;
     }
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
@@ -396,7 +402,7 @@ static void telemetry(void) {
 static void render(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    swarm();
+    swarm(); vector_tunnel();
 #ifndef GEEZY_LATTICE_CHECK
     mega();
 #else
@@ -483,8 +489,9 @@ int main(void) {
         }
         if(beat==30) down=WPAD_BUTTON_DOWN;
         if(beat>=30 && beat<90) held|=WPAD_BUTTON_DOWN;
+        if(beat>=60 && beat<90) held|=WPAD_BUTTON_B;
         if(beat>=90 && beat<210) held|=WPAD_BUTTON_A;
-        if(beat>=240 && beat<280) { held|=WPAD_BUTTON_B; synth.mask_pattern=4+stage; }
+        if(beat>=240 && beat<280) { held|=WPAD_BUTTON_B; synth.mask_pattern=stage%4; }
 #endif
         check_frame++;
 #endif
