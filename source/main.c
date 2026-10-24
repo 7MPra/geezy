@@ -6,6 +6,7 @@
 #include <string.h>
 #include "state.h"
 #include "font.h"
+#include "chrome.h"
 #include <stdio.h>
 
 static Synth synth;
@@ -34,19 +35,17 @@ static void make_metal(void) {
     float lo=fminf(nr,fminf(ng,nb)),hi=fmaxf(nr,fmaxf(ng,nb));
     nr=(nr-lo)/(hi-lo); ng=(ng-lo)/(hi-lo); nb=(nb-lo)/(hi-lo);
     for(int y=0;y<128;y++) for(int x=0;x<128;x++) {
-        float u=x/127.0f,v=y/127.0f,r,g,b;
+        ChromeColor sky={nr,ng,nb},ground={ng,nb,nr};
         if(synth.palette_count && synth.palette_count%4==0) {
-            float angle=atan2f(v-0.5f,u-0.5f)*2+v*7+phase;
-            r=0.5f+0.5f*cosf(angle); g=0.5f+0.5f*cosf(angle+2.094395f); b=0.5f+0.5f*cosf(angle+4.188790f);
-        } else {
-            float reflection=v<0.5f?powf(clamp01((v-0.20f)/0.24f),3):powf(clamp01((1-v)*1.6f),2);
-            float glow=0.25f+0.75f*fabsf(v-0.52f)*2;
-            r=nr*glow+(1-nr)*reflection; g=ng*glow+(1-ng)*reflection; b=nb*glow+(1-nb)*reflection;
+            float angle=atan2f(y-63.5f,x-63.5f)*2+y*7.0f/127+phase;
+            sky=(ChromeColor){0.5f+0.5f*cosf(angle),0.5f+0.5f*cosf(angle+2.094395f),0.5f+0.5f*cosf(angle+4.188790f)};
+            float low=fminf(sky.r,fminf(sky.g,sky.b)),high=fmaxf(sky.r,fmaxf(sky.g,sky.b));
+            sky=(ChromeColor){(sky.r-low)/(high-low),(sky.g-low)/(high-low),(sky.b-low)/(high-low)};
+            ground=(ChromeColor){sky.g,sky.b,sky.r};
         }
-        if(v>0.44f && v<0.50f) r=g=b=1;
-        if(v>=0.50f && v<0.58f) r=g=b=0;
+        ChromeColor color=chrome_profile(chrome_normal_y(x,y),sky,ground);
         int i=((y/4)*32+x/4)*16+(y%4)*4+x%4;
-        chrome_pixels[i]=rgb565(r,g,b);
+        chrome_pixels[i]=rgb565(color.r,color.g,color.b);
     }
     for(int y=0;y<64;y++) for(int x=0;x<64;x++) {
         int edge=x<2||y<2||x>=62||y>=62;

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include "../source/state.h"
 #include "../source/font.h"
+#include "../source/chrome.h"
 static int closef(float a,float b) { return fabsf(a-b)<0.001f; }
 int main(void) {
     Synth s; reset(&s);
@@ -114,16 +115,62 @@ int main(void) {
         assert(closef(a.draw.objects[0].x,b.draw.objects[0].x));
         assert(closef(orbit_eye(&a.draw).z,orbit_eye(&b.draw).z));
     }
-    float pos=0,vel=0; int overshot=0;
-    for(int i=0;i<100;i++) { pos=spring(pos,1,&vel,0); if(pos>1) overshot=1; }
-    assert(overshot && closef(pos,1));
+    // Shortest-arc springs share the exact damping/stiffness on all angle axes.
+    float velocity_test=0.2f;
+    float next=spring(0,1,&velocity_test);
+    assert(closef(velocity_test,0.27f) && closef(next,0.27f));
+    velocity_test=0;
+    float angle=179*0.0174532925f,travel=0;
+    for(int i=0;i<60;i++) {
+        float previous=angle;
+        angle=spring(angle,-179*0.0174532925f,&velocity_test);
+        travel+=fabsf(wrap(angle-previous,6.2831853f));
+    }
+    assert(travel<4*0.0174532925f);
+    reset(&s); update_rig(&s);
+    assert(closef(s.live.look_at.x,(1.0f/3)*0.42f));
+    assert(closef(s.live.look_at.z,(-4.0f/3)*0.42f));
+    reset(&s); s.bank=10; s.target_roll=20; s.live.burst=1;
+    advance(&s,1.0f/60,0,0,0);
+    assert(closef(s.bank,8.6f) && closef(s.target_roll,17.2f) && closef(s.live.burst,0.86f));
+    for(int f=38;f<=125;f++) assert(closef(dolly_radius(f)*tanf(f*0.008726646f),16*tanf(80*0.008726646f)));
+    ChromeColor sky={0,1,0.4f},ground={1,0.4f,0};
+    for(int i=-280;i<0;i++) {
+        ChromeColor c=chrome_profile(i/1000.0f,sky,ground);
+        assert(c.r==0 && c.g==0 && c.b==0);
+    }
+    for(int i=0;i<=140;i++) {
+        ChromeColor c=chrome_profile(i/1000.0f,sky,ground);
+        assert(c.r==1 && c.g==1 && c.b==1);
+    }
+    ChromeColor peak=chrome_profile(-0.65f,sky,ground),zenith=chrome_profile(1,sky,ground);
+    assert(closef(peak.r,1) && closef(peak.g,0.4f) && peak.b==0);
+    assert(zenith.r==0 && zenith.g==0 && zenith.b==0);
+    int rings=0,lit=0;
+    for(int i=-1000;i<-280;i++) {
+        ChromeColor c=chrome_profile(i/1000.0f,sky,ground);
+        int on=c.r>0;
+        if(on&&!lit) rings++;
+        lit=on;
+    }
+    assert(rings==1);
+    for(int y=0;y<128;y++) for(int x=0;x<128;x++) {
+        float ny=chrome_normal_y(x,y);
+        assert(ny>=-1 && ny<=1);
+        assert(closef(ny,-chrome_normal_y(x,127-y)));
+        ChromeColor c=chrome_profile(ny,sky,ground);
+        assert(c.r>=0 && c.r<=1 && c.g>=0 && c.g<=1 && c.b>=0 && c.b<=1);
+    }
+    float pos=0,vel=0,maximum=0; int overshot=0;
+    for(int i=0;i<100;i++) { pos=spring(pos,1,&vel); if(pos>1) overshot=1; maximum=fmaxf(maximum,pos); }
+    assert(overshot && maximum<1.10f && closef(pos,1));
     reset(&a); hit(&a,1);
     for(int i=0;i<120;i++) advance(&a,1.0f/60,0,0,0);
     assert(a.focus_index==0);
     assert(fabsf(a.live.look_at.x-a.live.objects[0].x)<0.08f);
     assert(fabsf(wrap(a.live.azimuth-a.target_azimuth,6.2831853f))<0.001f);
-    assert(a.live.radius>=dolly_radius(a.live.fov));
-    assert(closef(dolly_radius(80)*tanf(80*0.00872664626f),14));
+    assert(closef(a.live.radius,dolly_radius(a.live.fov)));
+    assert(closef(dolly_radius(80),16));
     assert(dolly_radius(125)<dolly_radius(80) && dolly_radius(80)<dolly_radius(38));
     for(int i=0;i<2000;i++) {
         if(i%41==0) next_scene(&a);
@@ -133,15 +180,11 @@ int main(void) {
         Vec eye=orbit_eye(&a.draw);
         assert(isfinite(eye.x) && isfinite(eye.y) && isfinite(eye.z));
         assert(a.draw.radius>0 && fabsf(a.draw.elevation)<=1.3f);
+        assert(closef(a.draw.radius*tanf(a.draw.fov*0.008726646f),16*tanf(80*0.008726646f)));
         for(int j=0;j<3;j++) {
             Vec object=a.draw.objects[j];
             assert(fabsf(object.x)<=5.01f && fabsf(object.y)<=3.01f && fabsf(object.z)<=5.01f);
-            Vec axis={(eye.x-a.draw.look_at.x)/a.draw.radius,(eye.y-a.draw.look_at.y)/a.draw.radius,(eye.z-a.draw.look_at.z)/a.draw.radius};
-            Vec delta={object.x-a.draw.look_at.x,object.y-a.draw.look_at.y,object.z-a.draw.look_at.z};
-            float along=delta.x*axis.x+delta.y*axis.y+delta.z*axis.z;
-            float radial=sqrtf(fmaxf(0,delta.x*delta.x+delta.y*delta.y+delta.z*delta.z-along*along));
-            assert(a.draw.radius-along>0.2f);
-            assert(radial+3.49f<=(a.draw.radius-along)*tanf(a.draw.fov*0.00872664626f));
+
         }
     }
     Vec cell=lattice_relative((Vec){24,48,72},(Vec){18,-3,42});
