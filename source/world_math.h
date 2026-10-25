@@ -15,6 +15,34 @@ static inline Vec flight_target(const Synth *s) {
         fmaxf(-0.45f,fminf(0.45f,s->flow.y*0.25f+s->draw.aim_y*0.35f)),
         -fmaxf(0.35f,fabsf(s->flow.z))});
 }
+typedef struct { Vec eye,target; float roll; } AtriumCamera;
+static inline AtriumCamera atrium_camera(const Synth *s) {
+    int shot=(s->cut+s->layout)%3;
+    const Vec eyes[3]={{2,-3,0},{-3,-2,1},{-5,2,0}};
+    const Vec directions[3]={{-0.18f,1.2f,-1},{0.9f,0.9f,-1},{0.12f,0.25f,-1}};
+    Vec direction=add(directions[shot],(Vec){s->flow.x*0.4f+s->draw.aim_x*0.4f,
+        s->flow.y*0.25f+s->draw.aim_y*0.3f,0});
+    return (AtriumCamera){eyes[shot],add(eyes[shot],unit(direction)),
+        fmaxf(-65,fminf(65,flight_bank(s)+(float[]){-8,18,-15}[shot]))};
+}
+// Hash the repeating cell identity, not its camera-relative slot (world_cam wraps at 96).
+static inline uint32_t atrium_hash(int x,int y,int z,uint32_t seed) {
+    return terrain_hash((x%2+2)%2,(z%2+2)%2,seed+((y%2+2)%2)*0x9e3779b9u);
+}
+static inline Vec atrium_cell(int x,int y,int z,Vec cam) {
+    return (Vec){x*48-cam.x,y*48-cam.y,z*48-cam.z};
+}
+static inline int atrium_kind(uint32_t h,int layout,int backdrop) {
+    return h%3?layout:(int)((h>>3)+backdrop)%4;
+}
+static inline float atrium_piston(float phase,uint32_t h,float burst) {
+    float time=phase*0.63661977f+(h%4),step=floorf(time),fraction=time-step;
+    int n=((int)step%4+4)%4;
+    const float stops[4]={0,1,0.25f,0.8f};
+    float ease=(1-powf(2,-10*fraction))*(1024.0f/1023);
+    float position=stops[n]+(stops[(n+1)%4]-stops[n])*ease;
+    return position*10+fminf(2,fmaxf(0,burst))*2;
+}
 static inline Vec cloud_lattice(int i,Vec camera) {
     return (Vec){world_cell(i%12,camera.x,8),world_cell((i/12)%12,camera.y,8),world_cell(i/144,camera.z,6)};
 }

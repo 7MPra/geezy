@@ -41,5 +41,37 @@ int main(void) {
     reset(&s); s.slow=1; s.tension=0.4f; assert(crystal_amount(&s)==1);
     s.slow=0; s.draw.burst=0.81f; assert(crystal_amount(&s)==1);
     s.draw.burst=0; assert(crystal_amount(&s)==0);
+    unsigned kinds=0;
+    for(int x=-6;x<=6;x++) for(int y=-6;y<=6;y++) for(int z=-6;z<=6;z++) {
+        uint32_t h=atrium_hash(x,y,z,7);
+        assert(h==atrium_hash(x+2,y-2,z+4,7));
+        Vec cam={41,-37,19},moved={137,-133,211};
+        assert(close_vec(atrium_cell(x,y,z,cam),atrium_cell(x+2,y-2,z+4,moved)));
+        Vec before=atrium_cell(x,y,z,cam),after=atrium_cell(x,y,z,add(cam,(Vec){2,3,-4}));
+        assert(close_vec(after,add(before,(Vec){-2,-3,4})));
+        for(int layout=0;layout<4;layout++) for(int backdrop=0;backdrop<4;backdrop++) {
+            int kind=atrium_kind(h,layout,backdrop); assert(kind>=0 && kind<4); kinds|=1u<<kind;
+        }
+    }
+    assert(kinds==15);
+    for(int step=-20;step<=20;step++) {
+        float phase=step*1.57079633f;
+        float a=atrium_piston(phase-0.0001f,7,0),b=atrium_piston(phase+0.0001f,7,0);
+        assert(fabsf(a-b)<0.02f); // The discrete target changes without teleporting the piston head.
+        for(int i=0;i<20;i++) {
+            float p=atrium_piston(phase+i*0.1f,7,3); assert(isfinite(p) && p>=0 && p<=14.001f);
+        }
+    }
+    reset(&s);
+    AtriumCamera shots[3];
+    for(int cut=0;cut<3;cut++) {
+        s.cut=cut; shots[cut]=atrium_camera(&s);
+        Vec d=add(shots[cut].target,scale_vec(shots[cut].eye,-1));
+        assert(d.y>0 && d.z<0 && fabsf(d.x*d.x+d.y*d.y+d.z*d.z-1)<0.001f);
+    }
+    assert(!close_vec(shots[0].target,shots[1].target) && !close_vec(shots[1].eye,shots[2].eye));
+    s.cut=1; s.draw.roll=400; assert(atrium_camera(&s).roll==65);
+    s.cut=2;
+    s.draw.roll=-400; assert(atrium_camera(&s).roll==-65);
     return 0;
 }
