@@ -305,7 +305,7 @@ int main(void) {
     assert(s.skin==0 && s.seed==7); // Ambiguous diagonals consume the tap without choosing a bank.
     for(int i=0;i<12;i++) {
         controls(&s,KEY_B|KEY_ONE); controls(&s,KEY_B|KEY_ONE);
-        assert(s.mask_pattern==(i+1)%6);
+        assert(s.mask_pattern==(i+1)%8);
         controls(&s,0); assert(s.seed==7);
     }
     for(int i=0;i<8;i++) {
@@ -340,7 +340,7 @@ int main(void) {
         assert(controls(&a,0));
         controls(&b,KEY_MODS); assert(controls(&b,0));
         assert(a.seed==b.seed && a.shape==b.shape && a.skin==b.skin);
-        assert(a.gear==1 && a.shape<5 && a.motion_mode<4 && a.mask_pattern<6);
+        assert(a.gear==1 && a.shape<5 && a.motion_mode<4 && a.mask_pattern<8);
         skins|=1u<<a.skin; layouts|=1u<<a.layout; backgrounds|=1u<<a.backdrop;
         reflections|=1u<<a.reflection; shapes|=1u<<a.shape;
         for(int j=0;j<10;j++) advance(&a,1.0f/60,0,0,0);
@@ -409,7 +409,7 @@ int main(void) {
     reset(&s);
     for(int i=1;i<=12;i++) {
         controls(&s,KEY_B); controls(&s,KEY_B);
-        assert(s.mask_pattern==i%6);
+        assert(s.mask_pattern==i%8);
         advance(&s,1.0f/60,0,0,1); assert(s.mask_env>0);
         controls(&s,0);
         for(int tick=0;tick<60;tick++) advance(&s,1.0f/60,0,0,0);

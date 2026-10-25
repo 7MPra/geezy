@@ -14,9 +14,61 @@ static inline void remix(Synth *s) {
     s->shape=(recipe>>1)%5; s->skin=(recipe>>5)&3; s->layout=(recipe>>8)&3;
     s->backdrop=(recipe>>12)&3; s->reflection=(recipe>>16)&3;
     s->beam_style=(recipe>>28)&3;
-    s->motion_mode=(recipe>>20)&3; s->mask_pattern=(recipe>>24)%6;
+    s->theme=(recipe>>6)&3; s->palette_bank=(recipe>>10)&15;
+    s->harmony_mode=s->palette_bank/4; s->bank_seed[s->palette_bank]=s->seed;
+    s->motion_mode=(recipe>>20)&3; s->mask_pattern=(recipe>>24)%8;
     s->motion_phase=s->grid_distance=0; s->grid_tick=0;
     hit(s,1.2f);
+}
+static inline void theme_preset(Synth *s,int preset) {
+    s->theme=preset%4;
+    s->skin=preset<4?0:(int[]){3,2,1,0}[preset-4];
+    s->reflection=preset<4?0:(int[]){2,3,0,1}[preset-4];
+}
+static inline void space_preset(Synth *s,int preset) {
+    s->backdrop=(int[]){0,1,2,0,0,3,1,2}[preset];
+    s->beam_style=(int[]){0,1,0,1,3,2,2,3}[preset];
+}
+static inline void object_preset(Synth *s,int preset) {
+    s->shape=(int[]){0,1,2,3,4,0,2,4}[preset];
+    s->layout=(int[]){0,1,2,3,0,2,1,3}[preset];
+}
+static inline void harmony_bank(Synth *s,int bank) {
+    if(s->palette_bank==bank) s->bank_seed[bank]+=977u;
+    s->palette_bank=bank; s->harmony_mode=bank/4; s->seed=s->bank_seed[bank];
+    s->palette_count++;
+}
+static inline void camera_cut(Synth *s) {
+    hit(s,2.2f); s->live.azimuth=s->target_azimuth; s->live.elevation=s->target_elevation; sample_pose(s);
+}
+enum { CLASS_A=1,CLASS_B=2,CLASS_X=4,CLASS_Y=8,CLASS_L=16,CLASS_R=32,
+       CLASS_ZL=64,CLASS_ZR=128,CLASS_UP=256,CLASS_RIGHT=512,CLASS_DOWN=1024,CLASS_LEFT=2048,
+       CLASS_PLUS=4096,CLASS_MINUS=8192 };
+static inline int classic_controls(Synth *s,unsigned held,float x,float y) {
+    unsigned previous=s->classic_held,down=held&~previous; s->classic_held=held;
+    int dirty=0;
+    if((held&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS)) { reset(s); s->classic_held=held; return 1; }
+    if(down&CLASS_X) { if(held&CLASS_L) s->layout=(s->layout+1)%4; else if(held&CLASS_R) camera_cut(s); else { palette_next(s); dirty=1; } }
+    if((down&CLASS_Y) && (held&(CLASS_L|CLASS_R))==(CLASS_L|CLASS_R)) { remix(s); dirty=1; }
+    else if(down&CLASS_Y) { if(held&CLASS_R) s->motion_mode=(s->motion_mode+1)%4; else next_scene(s); hit(s,1); }
+    if(down&CLASS_B) s->mask_pattern=(s->mask_pattern+1)%8;
+    if(down&CLASS_ZL) { s->theme=(s->theme+1)%4; dirty=1; }
+    if((down&CLASS_ZR) && !(held&CLASS_R)) { harmony_bank(s,(s->palette_bank+1)%16); dirty=1; }
+    if(down&CLASS_PLUS) { if(held&CLASS_L) s->hud_visible=!s->hud_visible; else change_gear(s,1); }
+    if(down&CLASS_MINUS) change_gear(s,-1);
+    const unsigned arrows[4]={CLASS_UP,CLASS_RIGHT,CLASS_DOWN,CLASS_LEFT};
+    for(int i=0;i<4;i++) if(down&arrows[i]) {
+        if(held&CLASS_L) { theme_preset(s,i+((held&CLASS_R)?4:0)); dirty=1; }
+        else if(held&CLASS_R) s->mask_pattern=i+((held&CLASS_ZR)?4:0);
+        else { Synth preset=*s; space_preset(&preset,i);
+            space_preset(s,i+((preset.backdrop==s->backdrop && preset.beam_style==s->beam_style)?4:0)); }
+    }
+    if(isfinite(x) && isfinite(y) && x*x+y*y>0.04f) {
+        steer(s,x,y);
+        if(!(previous&0x80000000u)) hit(s,1);
+        s->classic_held|=0x80000000u;
+    }
+    return dirty;
 }
 // 1/2 taps commit on release so a chord never also changes palette or scene.
 static inline int controls(Synth *s,unsigned held) {
@@ -25,11 +77,21 @@ static inline int controls(Synth *s,unsigned held) {
     if((held&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS)) {
         reset(s); s->held_buttons=held; return 1;
     }
-    if(down&KEY_B) s->mask_pattern=(s->mask_pattern+1)%6;
+    if(down&KEY_B) s->mask_pattern=(s->mask_pattern+1)%8;
     s->pending_taps|=down&KEY_MODS;
     if((held&(KEY_ONE|KEY_PLUS))==(KEY_ONE|KEY_PLUS)) {
         s->pending_taps&=~KEY_ONE; s->remix_pending=0;
         if(down&(KEY_ONE|KEY_PLUS)) s->hud_visible=!s->hud_visible;
+        return 0;
+    }
+    if((held&(KEY_TWO|KEY_PLUS))==(KEY_TWO|KEY_PLUS)) {
+        s->pending_taps&=~KEY_TWO; s->remix_pending=0;
+        if(down&(KEY_TWO|KEY_PLUS)) { s->theme=(s->theme+1)%4; return 1; }
+        return 0;
+    }
+    if((held&(KEY_ONE|KEY_MINUS))==(KEY_ONE|KEY_MINUS)) {
+        s->pending_taps&=~KEY_ONE; s->remix_pending=0;
+        if(down&(KEY_ONE|KEY_MINUS)) { harmony_bank(s,(s->palette_bank+1)%16); return 1; }
         return 0;
     }
     unsigned mods=held&KEY_MODS,arrows=held&KEY_ARROWS;
@@ -56,7 +118,7 @@ static inline int controls(Synth *s,unsigned held) {
         unsigned modifier=held&KEY_B?KEY_B:KEY_A;
         if(down&(mods|modifier)) {
             if(modifier==KEY_B && mods==KEY_ONE) {
-                if(!(down&KEY_B)) s->mask_pattern=(s->mask_pattern+1)%6;
+                if(!(down&KEY_B)) s->mask_pattern=(s->mask_pattern+1)%8;
             }
             else if(modifier==KEY_B) {
                 s->motion_mode=(s->motion_mode+1)%4;

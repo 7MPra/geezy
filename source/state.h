@@ -16,6 +16,10 @@ typedef struct {
     unsigned palette_count, tick, sample_tick, shake_cooldown, stutter_tick, grid_tick;
     int focus_index, shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
     int skin, layout, backdrop, reflection, remix_pending, beam_style, hud_visible;
+    int theme, harmony_mode, palette_bank, mask_active;
+    uint32_t bank_seed[16];
+    float mask_clock, mask_release;
+    unsigned classic_held;
     unsigned held_buttons, pending_taps;
     uint32_t seed;
 } Synth;
@@ -109,6 +113,7 @@ static inline void sample_pose(Synth *s) {
 static inline void reset(Synth *s) {
     *s=(Synth){.seed=7,.flow={0,0,-1},.live={.fov=80,.tunnel_axis={0,0,-1}},.target_fov=80,.shake_ready=1,.gear=1,.boost=1,.grid_axis=2,.focus_index=3,.hud_visible=1};
     for(int i=0;i<3;i++) s->live.objects[i]=formation(i,0);
+    for(int i=0;i<16;i++) s->bank_seed[i]=7u+(uint32_t)i*2654435761u;
     sample_pose(s);
 }
 static inline void change_gear(Synth *s,int delta) {
@@ -123,7 +128,7 @@ static inline void next_scene(Synth *s) {
     s->target_azimuth=wrap(s->target_azimuth+1.8f,6.2831853f);
     s->target_elevation=(s->shape&1)?0.65f:-0.5f;
 }
-static inline void steer(Synth *s,int x,int y) {
+static inline void steer(Synth *s,float x,float y) {
     float len=sqrtf(x*x+y*y+1);
     if((x||y) && (s->flow.x!=x/len || s->flow.y!=y/len)) s->grid_axis=x?0:1;
     s->flow=(Vec){x/len,y/len,-1/len};
@@ -147,6 +152,7 @@ static inline void palette_next(Synth *s) {
     s->seed=s->seed*1664525u+1013904223u;
     s->frequency=(s->frequency+1)%3;
     s->palette_count++;
+    s->bank_seed[s->palette_bank]=s->seed;
 }
 static inline int shake(Synth *s,float magnitude) {
     if(!isfinite(magnitude)) return 0;
@@ -243,6 +249,9 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         s->tension=0; s->overdrive=1;
         s->live.fov=125; sample_pose(s);
     }
+    if(accent && !s->mask_active) s->mask_clock=0;
+    if(!accent && s->mask_active) s->mask_release=0;
+    s->mask_active=accent;
     s->slow=slow;
     while(s->accumulator>=1.0f/60) {
         s->accumulator-=1.0f/60; s->tick++; s->sample_tick++;
@@ -267,6 +276,8 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         s->spin_velocity*=0.85f; s->burst_velocity*=0.86f;
         if(accent || s->live.burst>1.2f) s->overdrive=1;
         else s->overdrive+=((float[]){0,0.18f,0.72f,1}[s->gear]-s->overdrive)*0.1f;
+        s->mask_clock+=1.0f/60;
+        if(!accent) s->mask_release+=1.0f/60;
         float mask_target=accent?1:0;
         s->mask_env+=(mask_target-s->mask_env)*(mask_target?0.3f:0.18f);
         if(s->mask_env<0.001f) s->mask_env=0;

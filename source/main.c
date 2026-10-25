@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "controls.h"
+#include "midi.h"
 #include "font.h"
 #include "chrome.h"
 #include "grid.h"
@@ -13,22 +14,26 @@
 #include <stdio.h>
 
 static Synth synth;
+static MidiInput midi_input;
+static Palette palette;
+static int background_role;
 #ifdef GEEZY_SCULPTURE_CHECK
 static unsigned check_sculpture;
 #endif
 static volatile int quitting;
 static GXRModeObj *mode;
-static GXTexObj chrome_tex, grid_tex, history, dither_tex, trail_tex;
+static GXTexObj chrome_tex, grid_tex[3], history, dither_tex, trail_tex, halftone_tex;
 static u16 chrome_pixels[128*128] ATTRIBUTE_ALIGN(32);
-static u16 grid_pixels[GRID_TEXELS] ATTRIBUTE_ALIGN(32);
+static u16 grid_pixels[3][GRID_TEXELS] ATTRIBUTE_ALIGN(32);
 static u8 dither_pixels[64] ATTRIBUTE_ALIGN(32);
+static u8 halftone_pixels[512] ATTRIBUTE_ALIGN(32);
 static void *history_pixels, *trail_pixels;
 static int trail_valid, shell_surface;
-static int quantize_vertices;
+static int quantize_vertices, in_3d;
 static float aspect;
 static Mtx view;
 static GXColor tint={255,255,255,255};
-enum { CHROME, GRID, WIRE, MATTE, GHOST };
+enum { CHROME, GRID, WIRE, MATTE, GHOST, SOLID };
 static int surface_kind, primary_surface;
 static void power(void) { quitting=1; }
 static void reset_button(u32 irq,void *ctx) { (void)irq; (void)ctx; quitting=1; }
@@ -36,38 +41,43 @@ static void reset_button(u32 irq,void *ctx) { (void)irq; (void)ctx; quitting=1; 
 static u16 rgb565(float r,float g,float b) {
     return ((u16)(clamp01(r)*31)<<11)|((u16)(clamp01(g)*63)<<5)|(u16)(clamp01(b)*31);
 }
+static GXColor gx_color(ChromeColor c) { return (GXColor){clamp01(c.r)*255,clamp01(c.g)*255,clamp01(c.b)*255,255}; }
+static ChromeColor palette_role(int role) { role=(role%3+3)%3; return role==0?palette.primary:role==1?palette.secondary:palette.accent; }
+static GXColor clear_color(void) {
+    if(synth.theme==1 || synth.theme==3) return (GXColor){255,255,255,255};
+    return synth.theme==2?gx_color(palette.bg_tint):(GXColor){0,0,0,255};
+}
 static void make_metal(void) {
-    float phase=(synth.seed&65535)*0.000095875f;
-    float nr=0.5f+0.5f*cosf(phase),ng=0.5f+0.5f*cosf(phase+2.094395f),nb=0.5f+0.5f*cosf(phase+4.188790f);
-    float lo=fminf(nr,fminf(ng,nb)),hi=fmaxf(nr,fmaxf(ng,nb));
-    nr=(nr-lo)/(hi-lo); ng=(ng-lo)/(hi-lo); nb=(nb-lo)/(hi-lo);
+    palette=palette_generate(synth.seed,synth.harmony_mode);
     for(int y=0;y<128;y++) for(int x=0;x<128;x++) {
-        ChromeColor sky={nr,ng,nb},ground={ng,nb,nr};
+        float nx=(x-63.5f)/63.5f,ny=chrome_normal_y(x,y);
+        Palette local=palette;
         if(synth.reflection==2 || (synth.reflection==0 && synth.palette_count && synth.palette_count%4==0)) {
-            float angle=atan2f(y-63.5f,x-63.5f)*2+y*7.0f/127+phase;
-            sky=(ChromeColor){0.5f+0.5f*cosf(angle),0.5f+0.5f*cosf(angle+2.094395f),0.5f+0.5f*cosf(angle+4.188790f)};
-            float low=fminf(sky.r,fminf(sky.g,sky.b)),high=fmaxf(sky.r,fmaxf(sky.g,sky.b));
-            sky=(ChromeColor){(sky.r-low)/(high-low),(sky.g-low)/(high-low),(sky.b-low)/(high-low)};
-            ground=(ChromeColor){sky.g,sky.b,sky.r};
+            float shift=(atan2f(ny,nx)+3.14159265f)*57.29578f;
+            local=palette_generate(synth.seed+(uint32_t)(shift*100),synth.harmony_mode);
         }
-        ChromeColor color=chrome_profile(chrome_normal_y(x,y),sky,ground);
+        ChromeColor color=chrome_palette(nx,ny,local,synth.harmony_mode);
         float light=fmaxf(color.r,fmaxf(color.g,color.b));
-        if(synth.reflection==1) color=light<0.18f?(ChromeColor){0,0,0}:light<0.5f?sky:light<0.8f?ground:(ChromeColor){1,1,1};
+        if(synth.reflection==1) color=light<0.18f?(ChromeColor){0,0,0}:light<0.5f?local.primary:light<0.8f?local.secondary:(ChromeColor){1,1,1};
         if(synth.reflection==3) color=(ChromeColor){light,light,light};
-        int i=((y/4)*32+x/4)*16+(y%4)*4+x%4;
-        chrome_pixels[i]=rgb565(color.r,color.g,color.b);
+        chrome_pixels[((y/4)*32+x/4)*16+(y%4)*4+x%4]=rgb565(color.r,color.g,color.b);
     }
-    for(int y=0;y<64;y++) for(int x=0;x<64;x++) {
-        int edge=x<2||y<2||x>=62||y>=62;
-        int line=(x>=31&&x<=32)||(y>=31&&y<=32);
-        grid_pixels[((y/4)*16+x/4)*16+(y%4)*4+x%4]=edge?rgb565(nr,ng,nb):line?0xffff:0;
+    for(int role=0;role<3;role++) {
+        ChromeColor edge_color=palette_role(role),line_color=palette_role(role+1);
+        for(int y=0;y<64;y++) for(int x=0;x<64;x++) {
+            int edge=x<2||y<2||x>=62||y>=62,line=(x>=31&&x<=32)||(y>=31&&y<=32);
+            ChromeColor c=edge?edge_color:line?line_color:(ChromeColor){0,0,0};
+            grid_pixels[role][grid_index(64,x,y)]=rgb565(c.r,c.g,c.b);
+        }
+        grid_mipmaps(grid_pixels[role]);
     }
-    grid_mipmaps(grid_pixels);
     DCFlushRange(chrome_pixels,sizeof(chrome_pixels)); DCFlushRange(grid_pixels,sizeof(grid_pixels)); GX_InvalidateTexAll();
+    GX_SetCopyClear(clear_color(),0x00ffffff);
+    trail_valid=0;
 }
 static void material(GXTexObj *texture) {
     tint=(GXColor){255,255,255,255};
-    GX_SetNumTevStages(1); GX_ClearVtxDesc();
+    GX_SetNumTevStages(1); GX_SetTevSwapMode(GX_TEVSTAGE0,GX_TEV_SWAP0,GX_TEV_SWAP0); GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS,GX_DIRECT); GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);
     GX_SetVtxDesc(GX_VA_TEX0,GX_DIRECT); GX_SetNumTexGens(texture?1:0);
     GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,GX_TG_TEX0,GX_IDENTITY);
@@ -78,10 +88,17 @@ static void material(GXTexObj *texture) {
 static void surface(int kind) {
     if(primary_surface && synth.skin==3) kind=WIRE;
     if(primary_surface && kind==CHROME) kind=(int[]){CHROME,GRID,GHOST,WIRE}[synth.skin];
+    if(!primary_surface && kind==GRID) {
+        if(synth.theme==1) kind=background_role%2?MATTE:SOLID;
+        if(synth.theme==2) kind=CHROME;
+    }
+    if(primary_surface && synth.theme==2 && kind!=WIRE && kind!=MATTE) kind=SOLID;
+    if(shell_surface && synth.theme==1) kind=SOLID;
     surface_kind=kind;
-    material(kind==CHROME?&chrome_tex:kind==GRID?&grid_tex:kind==GHOST?&chrome_tex:NULL);
+    material(kind==CHROME?&chrome_tex:kind==GRID?&grid_tex[background_role%3]:kind==GHOST?&chrome_tex:NULL);
     if(kind==MATTE) tint=(GXColor){0,0,0,255};
-    if(kind==WIRE) tint=(synth.seed&1)?(GXColor){0,255,255,255}:(GXColor){255,255,255,255};
+    if(kind==WIRE || kind==SOLID) tint=gx_color(primary_surface?palette.accent:palette_role(background_role));
+    if(kind==SOLID && synth.theme==1 && !primary_surface) tint=shell_surface?(GXColor){255,255,255,255}:gx_color(palette.primary);
     if(kind==WIRE) { GX_SetLineWidth(10,GX_TO_ZERO); GX_SetPointSize(16,GX_TO_ZERO); }
     if(synth.slow) {
         material(NULL);
@@ -89,9 +106,10 @@ static void surface(int kind) {
         tint=white?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
         return;
     }
-    if(kind==GHOST) {
+    if(synth.theme==3 && kind!=MATTE) { material(NULL); tint=gx_color(primary_surface?palette.primary:palette.secondary); }
+    if(kind==GHOST || synth.theme==3) {
         GX_SetNumTevStages(2); GX_SetNumTexGens(2);
-        Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=16;
+        Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=synth.theme==3?1:16;
         GX_LoadTexMtxImm(uv,GX_TEXMTX0,GX_MTX2x4);
         GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX0,GX_TEXMTX0);
         GX_LoadTexObj(&dither_tex,GX_TEXMAP1);
@@ -104,6 +122,7 @@ static void surface(int kind) {
 }
 static void vertex(Vec p,float u,float v,u8 shade,u8 alpha) {
     if(quantize_vertices) p=(Vec){snap_vertex(p.x),snap_vertex(p.y),snap_vertex(p.z)};
+    if(in_3d && synth.theme==3) { u=(p.x+p.z*0.37f)*4; v=(p.y+p.z*0.61f)*4; }
     GX_Position3f32(p.x,p.y,p.z); GX_Color4u8(shade*tint.r/255,shade*tint.g/255,shade*tint.b/255,alpha); GX_TexCoord2f32(u,v);
 }
 static void normal_vertex(Vec p,Vec n,u8 shade) {
@@ -164,7 +183,7 @@ static void beam(Vec a,Vec b,float width,u8 shade) {
     box_vertices(p,shade);
 }
 static void ortho(void) {
-    quantize_vertices=0;
+    in_3d=0; quantize_vertices=0; GX_SetFog(GX_FOG_NONE,0,1,0,1,(GXColor){0,0,0,255});
     Mtx m; Mtx44 p; guMtxIdentity(m); GX_LoadPosMtxImm(m,GX_PNMTX0);
     guOrtho(p,1,-1,-1,1,0,10); GX_LoadProjectionMtx(p,GX_ORTHOGRAPHIC);
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
@@ -190,7 +209,7 @@ static void feedback_echo(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
 static void feedback_trail(void) {
-    if(!trail_valid || synth.slow) return;
+    if(!trail_valid || synth.slow || synth.theme!=0) return;
     ortho(); material(&trail_tex);
     float amount=0.25f+0.55f*synth.overdrive+0.025f*synth.gear;
     float zoom=1.02f+0.04f*synth.overdrive,angle=0.008f+synth.overdrive*0.018f;
@@ -214,7 +233,8 @@ static void feedback_trail(void) {
     GX_End(); GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
 static void projection(void) {
-    quantize_vertices=synth.slow;
+    in_3d=1; quantize_vertices=synth.slow;
+    GX_SetFog(synth.theme==1||synth.theme==2?GX_FOG_PERSP_LIN:GX_FOG_NONE,32,110,0.2f,220,clear_color());
     Mtx44 p; guPerspective(p,synth.draw.fov,aspect,0.2f,220);
     GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
     Vec eye=orbit_eye(&synth.draw),target=view_target(&synth.draw),vertical=camera_up(&synth.draw);
@@ -513,8 +533,11 @@ static void trusses(Vec world,Vec eye,float flow) {
         if(view[2][0]*center.x+view[2][1]*center.y+view[2][2]*center.z+view[2][3]>20) continue;
         float sign=(x+y+z)%2?1:-1;
         float width=0.28f+synth.overdrive*0.22f;
+        background_role=0; surface(GRID);
         truss_beam(center,(Vec){11.5f,11.5f*sign,0},eye,width,flow);
+        background_role=1; surface(GRID);
         truss_beam(center,(Vec){0,11.5f,11.5f*sign},eye,width,flow);
+        background_role=2; surface(GRID);
         truss_beam(center,(Vec){11.5f*sign,0,11.5f},eye,width,flow);
     }
 }
@@ -522,10 +545,11 @@ static void swarm(void) {
     Vec eye=orbit_eye(&synth.draw);
     Vec world=synth.slow?synth.draw.world_cam:synth.live.world_cam;
     float flow=(synth.slow?synth.draw.uv_shift:synth.live.uv_shift)*2;
-    quantize_vertices=0; surface(GRID);
+    quantize_vertices=0; background_role=0; surface(GRID);
     if(synth.beam_style==3) { trusses(world,eye,flow); quantize_vertices=synth.slow; return; }
     for(int axis=0;axis<3;axis++) for(int i=0;i<8;i++) for(int j=0;j<8;j++) {
         if(!beam_axis(synth.beam_style,axis)) continue;
+        background_role=axis; surface(GRID);
         Vec fixed={0,0,0}; float origin,scroll,perp,view_perp;
         if(axis==0) {
             fixed.y=lattice_axis(i,world.y,eye.y); fixed.z=lattice_axis(j,world.z,eye.z);
@@ -564,7 +588,7 @@ static void vector_tunnel(void) {
     Vec side=cross(direction,tangent);
     float length=0.7f+fminf(distance,2.8f);
     // Fixed world-space rings; fade completely before recycling any axis.
-    quantize_vertices=0; surface(WIRE);
+    quantize_vertices=0; background_role=2; surface(WIRE);
     for(int i=0;i<192;i++) {
         Vec center=synth.backdrop==3?matrix_particle(i,p->world_cam,eye):tunnel_particle(i,p->world_cam,eye);
         float fade=particle_fade(center,eye);
@@ -587,7 +611,7 @@ static void dome(void) {
     quantize_vertices=0; shell_surface=1;
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
     for(int row=0;row<12;row++) for(int col=0;col<24;col++) {
-        surface((row+col+synth.shape)%3?CHROME:GRID);
+        background_role=(row+col)%3; surface((row+col+synth.shape)%3?CHROME:GRID);
         u8 shade=(row+col)%7==0?0:255;
         begin_3d(GX_QUADS,4);
         for(int j=0;j<4;j++) {
@@ -606,7 +630,7 @@ static void warp_tunnel(void) {
     const Pose *p=synth.slow?&synth.draw:&synth.live;
     Vec eye=orbit_eye(&synth.draw),axis=p->tunnel_axis;
     Vec right=unit(cross(axis,fabsf(axis.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0})),up=cross(right,axis);
-    int sides=(int[]){6,8,12}[(synth.seed>>4)%3];
+    int sides=(int[]){6,8,12,4}[(synth.beam_style+(synth.seed>>4))%4];
     quantize_vertices=0;
     for(int ring=0;ring<24;ring++) {
         float depth=tunnel_depth(ring,p->tunnel_distance),fade=tunnel_fade(depth);
@@ -614,7 +638,7 @@ static void warp_tunnel(void) {
         Vec center=add(eye,scale_vec(axis,depth));
         float twist=ring*6.2831853f/12+synth.draw.phase*0.2f;
         float radius=14+(ring%3)*0.8f;
-        surface(ring%3==0?CHROME:GRID);
+        background_role=ring%3; surface(synth.theme==1?GRID:ring%3==0?CHROME:GRID);
         for(int side=0;side<sides;side++) {
             float a=side*6.2831853f/sides+twist,b=(side+1)*6.2831853f/sides+twist;
             Vec start=add(center,add(scale_vec(right,cosf(a)*radius),scale_vec(up,sinf(a)*radius)));
@@ -630,61 +654,7 @@ static void mask_rect(float x,float y,float w,float h) {
     vertex((Vec){x+w,y+h,-1},1,1,255,255); vertex((Vec){x,y+h,-1},0,1,255,255);
     GX_End();
 }
-static void overlay(void) {
-    float env=synth.mask_env;
-    if(env==0) return;
-    ortho(); material(NULL); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
-    GX_SetBlendMode(GX_BM_LOGIC,GX_BL_ONE,GX_BL_ZERO,GX_LO_INV);
-    float t=synth.tick/60.0f,burst=fminf(synth.draw.burst,4);
-    int pattern=synth.mask_pattern;
-    float angle=0,scale=1,tx=0,ty=0;
-    if(pattern==1) { tx=checker_scroll(synth.tick,17); ty=checker_scroll(synth.tick,11); }
-    if(pattern>=4) angle=synth.draw.phase*57.2957795f;
-    if(pattern==2) angle=-synth.draw.roll+synth.draw.phase*57.2957795f;
-    if(pattern==3) { angle=synth.draw.phase*57.2957795f; scale=env*(0.6f+fmodf(t*1.8f,1.5f)+burst*0.12f); tx=wrap(t*2,3); }
-    Mtx m; guVector axis={0,0,1}; guMtxRotAxisDeg(m,&axis,angle);
-    guMtxScaleApply(m,m,scale,scale,1); guMtxTransApply(m,m,tx,ty,0);
-    GX_LoadPosMtxImm(m,GX_PNMTX0);
-    switch(pattern) {
-    case 0:
-        for(int i=-1;i<6;i++) mask_rect(-1,-1+i*0.5f-fmodf(t*2,0.5f),2,(0.16f+burst*0.025f)*env);
-        break;
-    case 1:
-        for(int y=-2;y<5;y++) for(int x=-2;x<5;x++) if((x+y)%2==0)
-            mask_rect(-1+x*0.5f+(1-env)*0.25f,-1+y*0.5f+(1-env)*0.25f,0.5f*env,0.5f*env);
-        break;
-    case 2: {
-        float width=(0.06f+burst*0.045f)*env;
-        mask_rect(-2,-width,4,width*2);
-        mask_rect(-width,-2,width*2,2-width);
-        mask_rect(-width,width,width*2,2-width);
-        break;
-    }
-    case 3:
-        GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
-        vertex((Vec){-1,-1,-1},0,0,255,255); vertex((Vec){1,-1,-1},0,0,255,255); vertex((Vec){1,1,-1},0,0,255,255);
-        GX_End();
-        break;
-    case 4:
-        for(int i=0;i<4;i++) {
-            float r=0.15f+i*0.42f+fmodf(t*0.7f,0.42f),w=0.09f*env;
-            mask_rect(-r,-r,r*2,w); mask_rect(-r,r-w,r*2,w);
-            mask_rect(-r,-r+w,w,2*r-2*w); mask_rect(r-w,-r+w,w,2*r-2*w);
-        }
-        break;
-    case 5:
-        GX_Begin(GX_TRIANGLES,GX_VTXFMT0,24);
-        for(int i=0;i<8;i++) {
-            float a=i*0.7853982f,w=0.28f*env;
-            vertex((Vec){0,0,-1},0,0,255,255);
-            vertex((Vec){2*cosf(a-w),2*sinf(a-w),-1},0,0,255,255);
-            vertex((Vec){2*cosf(a+w),2*sinf(a+w),-1},0,0,255,255);
-        }
-        GX_End();
-        break;
-    }
-    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
-}
+#include "overlay.h"
 static void small_text(const char *text,float x,float y) {
     float dot=0.008f;
     for(int i=0;text[i];i++) for(int row=0;row<5;row++) for(int col=0;col<5;col++)
@@ -693,7 +663,11 @@ static void small_text(const char *text,float x,float y) {
 }
 static void telemetry(void) {
     ortho(); material(NULL); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
-    GX_SetBlendMode(GX_BM_LOGIC,GX_BL_ONE,GX_BL_ZERO,GX_LO_INV);
+    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    tint=synth.theme==1||synth.theme==3?(GXColor){0,0,0,255}:(GXColor){255,255,255,255};
+    GXColor ink=tint; tint=synth.theme==1||synth.theme==3?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
+    mask_rect(-0.97f,0.66f,0.76f,0.31f); mask_rect(0.15f,0.66f,0.82f,0.31f);
+    mask_rect(-0.97f,-0.94f,0.9f,0.14f); mask_rect(0.63f,-0.94f,0.34f,0.14f); tint=ink;
     char text[40];
     float cruise=(float[]){3,12,36,72}[synth.gear]*synth.boost;
     float speed=synth.slow?0:sqrtf(synth.velocity.x*synth.velocity.x+synth.velocity.y*synth.velocity.y+synth.velocity.z*synth.velocity.z)+cruise;
@@ -702,7 +676,7 @@ static void telemetry(void) {
     snprintf(text,sizeof(text),"FOV:%03.0f",synth.draw.fov); small_text(text,0.94f-strlen(text)*0.048f,0.94f);
     snprintf(text,sizeof(text),"SEED:%04X",(unsigned)(synth.seed&65535)); small_text(text,0.94f-strlen(text)*0.048f,0.84f);
     snprintf(text,sizeof(text),"S%d L%d M%d V%d",synth.shape,synth.layout,synth.skin,synth.motion_mode); small_text(text,-0.94f,0.74f);
-    snprintf(text,sizeof(text),"BG%d T%d R%d X%d",synth.backdrop,synth.beam_style,synth.reflection,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
+    snprintf(text,sizeof(text),"W%d P%02d X%d",synth.theme,synth.palette_bank,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
     if(synth.tension<=0.7f || (synth.tick/6)%2==0) {
         char bar[11]; for(int i=0;i<10;i++) bar[i]=i<(int)(synth.tension*10)?'|':' '; bar[10]=0;
         snprintf(text,sizeof(text),"TNS:[%s]",bar); small_text(text,-0.94f,-0.82f);
@@ -711,6 +685,12 @@ static void telemetry(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
 static void render(void) {
+#ifdef GEEZY_STENCIL_CHECK
+    ortho(); material(NULL); tint=(GXColor){0,0,255,255}; mask_rect(-1,-1,2,2);
+    tint=(GXColor){0,255,0,255}; mask_rect(wrap(synth.tick*0.01f,1.6f),-0.5f,0.1f,0.1f);
+    palette.primary=(ChromeColor){1,0,0}; palette.secondary=(ChromeColor){0,1,0}; palette.accent=(ChromeColor){1,1,0};
+    synth.mask_pattern=2+(synth.tick/120)%2; synth.mask_env=1; overlay(); return;
+#endif
 #ifdef GEEZY_TRAIL_CHECK
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     feedback_trail();
@@ -724,12 +704,13 @@ static void render(void) {
     ortho(); material(NULL);
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     tint=(GXColor){0,0,0,255}; mask_rect(-1,-1,2,2);
-    synth.mask_pattern=1; synth.mask_env=1; overlay(); return;
+    synth.mask_pattern=6; synth.mask_env=1; overlay(); return;
 #endif
     static unsigned last_tick;
     if(synth.tick<last_tick) trail_valid=0;
     last_tick=synth.tick;
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    ortho(); material(NULL); tint=clear_color(); mask_rect(-1,-1,2,2);
     if(synth.slow) {
         ortho(); material(NULL);
         tint=strobe_lit(&synth)?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
@@ -748,10 +729,8 @@ static void render(void) {
 #else
     (void)mega; (void)feedback_trail;
 #endif
-    if(synth.draw.burst>0.5f || synth.tension>0.3f) {
-        GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
-        feedback_echo();
-    }
+    GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
+    if(synth.draw.burst>0.5f || synth.tension>0.3f) feedback_echo();
 #ifndef GEEZY_LATTICE_CHECK
     if(!synth.slow) {
         GX_CopyTex(trail_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
@@ -795,20 +774,30 @@ int main(void) {
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
     GX_InitTexObj(&chrome_tex,chrome_pixels,128,128,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&chrome_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
-    GX_InitTexObj(&grid_tex,grid_pixels,64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_TRUE);
-    GX_InitTexObjLOD(&grid_tex,GX_LIN_MIP_LIN,GX_LINEAR,0,6,0,GX_TRUE,GX_TRUE,GX_ANISO_4);
+    for(int role=0;role<3;role++) {
+        GX_InitTexObj(&grid_tex[role],grid_pixels[role],64,64,GX_TF_RGB565,GX_REPEAT,GX_REPEAT,GX_TRUE);
+        GX_InitTexObjLOD(&grid_tex[role],GX_LIN_MIP_LIN,GX_LINEAR,0,6,0,GX_TRUE,GX_TRUE,GX_ANISO_4);
+    }
     GX_InitTexObj(&history,history_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&history,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_InitTexObj(&trail_tex,trail_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&trail_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_SetTexCopySrc(0,0,mode->fbWidth,mode->efbHeight);
     GX_SetTexCopyDst(mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_FALSE);
-    for(int y=0;y<8;y++) for(int x=0;x<8;x++) dither_pixels[y*8+x]=y%4==0?0:255;
+    const u8 bayer[8][8]={{0,32,8,40,2,34,10,42},{48,16,56,24,50,18,58,26},{12,44,4,36,14,46,6,38},{60,28,52,20,62,30,54,22},
+        {3,35,11,43,1,33,9,41},{51,19,59,27,49,17,57,25},{15,47,7,39,13,45,5,37},{63,31,55,23,61,29,53,21}};
+    for(int y=0;y<8;y++) for(int x=0;x<8;x++) dither_pixels[y*8+x]=bayer[y][x]<36?255:0;
+    for(int y=0;y<8;y++) for(int x=0;x<64;x++)
+        halftone_pixels[((y/4)*8+x/8)*32+(y%4)*8+x%8]=bayer[y][x%8]<x?255:0;
+    DCFlushRange(halftone_pixels,sizeof(halftone_pixels));
+    GX_InitTexObj(&halftone_tex,halftone_pixels,64,8,GX_TF_I8,GX_REPEAT,GX_REPEAT,GX_FALSE);
+    GX_InitTexObjLOD(&halftone_tex,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     DCFlushRange(dither_pixels,sizeof(dither_pixels));
     GX_InitTexObj(&dither_tex,dither_pixels,8,8,GX_TF_I8,GX_REPEAT,GX_REPEAT,GX_FALSE);
     GX_InitTexObjLOD(&dither_tex,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     WPAD_SetDataFormat(0,WPAD_FMT_BTNS_ACC);
     reset(&synth); make_metal();
+    midi_start();
     GX_CopyDisp(fb[0],GX_TRUE); GX_DrawDone();
     VIDEO_SetBlack(FALSE); VIDEO_Flush();
     int frame=1; u64 last=gettime();
@@ -819,7 +808,16 @@ int main(void) {
         u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
-#if defined(GEEZY_SCULPTURE_CHECK)
+#if defined(GEEZY_GRAPHICS_CHECK)
+        unsigned stage=(check_frame/120)%32,beat=check_frame%120;
+        down=held=0;
+        if(beat==0) {
+            reset(&synth); memset(&midi_input,0,sizeof(midi_input));
+            theme_preset(&synth,stage/8); harmony_bank(&synth,stage%16);
+            object_preset(&synth,stage%8); make_metal();
+        }
+        midi_action(&synth,&midi_input,8+stage%8,beat>=20 && beat<100);
+#elif defined(GEEZY_SCULPTURE_CHECK)
         unsigned stage=(check_frame/120)%36,beat=check_frame%120;
         down=held=0;
         if(beat==0) {
@@ -831,7 +829,7 @@ int main(void) {
         if(stage%4==0 && beat>=30 && beat<110) held=WPAD_BUTTON_A;
         if(stage%4==1 && beat>=60 && beat<90) held=WPAD_BUTTON_B;
         if(beat==90) held|=WPAD_BUTTON_1|WPAD_BUTTON_PLUS;
-#elif defined(GEEZY_LATTICE_CHECK) || defined(GEEZY_CHECKER_CHECK) || defined(GEEZY_TRAIL_CHECK)
+#elif defined(GEEZY_LATTICE_CHECK) || defined(GEEZY_CHECKER_CHECK) || defined(GEEZY_TRAIL_CHECK) || defined(GEEZY_STENCIL_CHECK)
         down=held=0;
         if(check_frame==0) {
             reset(&synth); synth.gear=2; steer(&synth,1,1);
@@ -868,7 +866,20 @@ int main(void) {
 #endif
         check_frame++;
 #endif
-        if(down&WPAD_BUTTON_HOME) break;
+        if(down&(WPAD_BUTTON_HOME|WPAD_CLASSIC_BUTTON_HOME)) break;
+        unsigned classic=0; float stick_x=0,stick_y=0;
+#ifndef GEEZY_VISUAL_CHECK
+        struct expansion_t expansion; memset(&expansion,0,sizeof(expansion)); WPAD_Expansion(0,&expansion);
+        if(expansion.type==WPAD_EXP_CLASSIC && WPAD_Data(0)->err==WPAD_ERR_NONE) {
+            const u32 buttons[]={WPAD_CLASSIC_BUTTON_A,WPAD_CLASSIC_BUTTON_B,WPAD_CLASSIC_BUTTON_X,WPAD_CLASSIC_BUTTON_Y,
+                WPAD_CLASSIC_BUTTON_FULL_L,WPAD_CLASSIC_BUTTON_FULL_R,WPAD_CLASSIC_BUTTON_ZL,WPAD_CLASSIC_BUTTON_ZR,
+                WPAD_CLASSIC_BUTTON_UP,WPAD_CLASSIC_BUTTON_RIGHT,WPAD_CLASSIC_BUTTON_DOWN,WPAD_CLASSIC_BUTTON_LEFT,
+                WPAD_CLASSIC_BUTTON_PLUS,WPAD_CLASSIC_BUTTON_MINUS};
+            for(int i=0;i<14;i++) if(held&buttons[i]) classic|=1u<<i;
+            float angle=expansion.classic.ljs.ang*0.0174532925f,mag=clamp01(expansion.classic.ljs.mag);
+            stick_x=mag*sinf(angle); stick_y=mag*cosf(angle);
+        }
+#endif
         unsigned keys=0;
         if(held&WPAD_BUTTON_A) keys|=KEY_A;
         if(held&WPAD_BUTTON_B) keys|=KEY_B;
@@ -880,8 +891,15 @@ int main(void) {
         if(held&WPAD_BUTTON_UP) keys|=KEY_LEFT;
         if(held&WPAD_BUTTON_PLUS) keys|=KEY_PLUS;
         if(held&WPAD_BUTTON_MINUS) keys|=KEY_MINUS;
-        if(controls(&synth,keys)) make_metal();
-        int recovery=(keys&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS);
+        int dirty=controls(&synth,keys);
+        dirty|=classic_controls(&synth,classic,stick_x,stick_y);
+        dirty|=midi_poll(&synth,&midi_input);
+        int midi_mask=midi_overlay(&midi_input);
+        if(midi_mask>=0) synth.mask_pattern=midi_mask;
+        int midi_boost=midi_steering(&synth,&midi_input);
+        int classic_boost=stick_x*stick_x+stick_y*stick_y>0.04f;
+        if(dirty) make_metal();
+        int recovery=(keys&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS) || (classic&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS);
         if(!recovery) {
 #ifndef GEEZY_VISUAL_CHECK
             WPADData *remote=WPAD_Data(0);
@@ -890,7 +908,8 @@ int main(void) {
                 shake(&synth,sqrtf(gf.x*gf.x+gf.y*gf.y+gf.z*gf.z));
             }
 #endif
-            advance(&synth,dt,!!(keys&KEY_A),steering_buttons(keys),!!(keys&KEY_B));
+            advance(&synth,dt,!!(keys&KEY_A)||!!(classic&CLASS_A)||midi_input.held[4],
+                steering_buttons(keys)||classic_boost||midi_boost,!!(keys&KEY_B)||!!(classic&CLASS_B)||midi_mask>=0);
         }
         GX_SetColorUpdate(GX_TRUE); GX_InvalidateTexAll(); render();
         GX_DrawDone();
@@ -898,5 +917,6 @@ int main(void) {
         GX_CopyDisp(fb[frame],GX_TRUE); GX_Flush();
         VIDEO_SetNextFramebuffer(fb[frame]); VIDEO_Flush(); VIDEO_WaitVSync(); frame^=1;
     }
+    midi_usb.stop=1;
     return 0;
 }
