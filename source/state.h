@@ -4,8 +4,8 @@
 #include <stdint.h>
 typedef struct { float x,y,z; } Vec;
 typedef struct {
-    Vec world_cam, look_at, objects[3], travel;
-    float phase, roll, aim_x, aim_y, fov, burst, uv_shift, azimuth, elevation, radius;
+    Vec world_cam, look_at, objects[3], travel, tunnel_axis;
+    float phase, roll, aim_x, aim_y, fov, burst, uv_shift, azimuth, elevation, radius, tunnel_distance;
 } Pose;
 typedef struct {
     Pose live, draw, stutter_anchor;
@@ -13,9 +13,9 @@ typedef struct {
     float spin_velocity, burst_velocity, accumulator, target_fov, target_roll, target_aim_x, target_aim_y;
     float target_azimuth, target_elevation, azimuth_velocity, elevation_velocity, roll_velocity;
     float bank, tension, overdrive, boost, mask_env, motion_phase, grid_distance;
-    unsigned palette_count, tick, sample_tick, flash_ticks, shake_cooldown, stutter_tick, grid_tick;
+    unsigned palette_count, tick, sample_tick, shake_cooldown, stutter_tick, grid_tick;
     int focus_index, shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
-    int skin, layout, backdrop, reflection, remix_pending, beam_style;
+    int skin, layout, backdrop, reflection, remix_pending, beam_style, hud_visible;
     unsigned held_buttons, pending_taps;
     uint32_t seed;
 } Synth;
@@ -66,6 +66,12 @@ static inline float particle_fade(Vec p,Vec eye) {
     float a=clamp01((44-distance)/12),b=clamp01((center-12)/6),c=clamp01((distance-3)/5);
     return a*a*(3-2*a)*b*b*(3-2*b)*c*c*(3-2*c);
 }
+static inline unsigned strobe_period(float tension) { return 6-(unsigned)(clamp01(tension)*4.0f+0.0001f); }
+static inline int strobe_lit(const Synth *s) {
+    unsigned period=strobe_period(s->tension);
+    return s->slow && s->stutter_tick%period<period/2;
+}
+static inline int subject_count(int layout) { return layout==0?3:layout==2?2:1; }
 static inline Vec formation(int index,int variant) {
     static const Vec offsets[3]={{-5,-2,2},{5,3,-1},{1,-1,-5}};
     return offsets[(index+variant)%3];
@@ -101,7 +107,7 @@ static inline void sample_pose(Synth *s) {
     s->draw=s->live; s->sample_tick=0;
 }
 static inline void reset(Synth *s) {
-    *s=(Synth){.seed=7,.flow={0,0,-1},.live={.fov=80},.target_fov=80,.shake_ready=1,.gear=1,.boost=1,.grid_axis=2,.focus_index=3};
+    *s=(Synth){.seed=7,.flow={0,0,-1},.live={.fov=80,.tunnel_axis={0,0,-1}},.target_fov=80,.shake_ready=1,.gear=1,.boost=1,.grid_axis=2,.focus_index=3,.hud_visible=1};
     for(int i=0;i<3;i++) s->live.objects[i]=formation(i,0);
     sample_pose(s);
 }
@@ -136,7 +142,6 @@ static inline void hit(Synth *s,float strength) {
     s->focus_index=(s->focus_index+1)%4;
     s->target_azimuth=wrap(s->target_azimuth+1.5f+0.3f*fminf(strength,4),6.2831853f);
     s->target_elevation=(float[]){-0.65f,0.8f,0.25f,-0.3f}[s->cut];
-    s->flash_ticks=12;
 }
 static inline void palette_next(Synth *s) {
     s->seed=s->seed*1664525u+1013904223u;
@@ -177,6 +182,16 @@ static inline void move_camera(Synth *s,float cruise) {
         delta=(Vec){direction.x*speed/(60*length),direction.y*speed/(60*length),direction.z*speed/(60*length)};
     }
     s->live.travel=delta;
+    float distance=sqrtf(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z);
+    s->live.tunnel_distance=wrap(s->live.tunnel_distance+distance,192);
+    if(distance>0.0001f) {
+        Vec *axis=&s->live.tunnel_axis;
+        axis->x+=(delta.x/distance-axis->x)*0.12f;
+        axis->y+=(delta.y/distance-axis->y)*0.12f;
+        axis->z+=(delta.z/distance-axis->z)*0.12f;
+        float length=sqrtf(axis->x*axis->x+axis->y*axis->y+axis->z*axis->z);
+        if(length>0.0001f) { axis->x/=length; axis->y/=length; axis->z/=length; }
+    }
     s->live.world_cam.x=wrap(s->live.world_cam.x+delta.x,96);
     s->live.world_cam.y=wrap(s->live.world_cam.y+delta.y,96);
     s->live.world_cam.z=wrap(s->live.world_cam.z+delta.z,96);
@@ -190,19 +205,20 @@ static inline float spring(float pos,float target,float *velocity) {
 static inline void update_rig(Synth *s) {
     for(int i=0;i<3;i++) {
         Vec target=formation(i,s->cut+s->shape);
-        int slot=(i+s->cut)%3;
-        if(s->layout==1) target=(Vec){0,(slot-1)*5.5f,slot%2?-2:1};
-        else if(s->layout==2) target=(Vec){(slot-1)*7.0f,0,1-slot*3.0f};
-        else if(s->layout==3) target=(Vec){slot==1?3:-2,slot==2?2:-1,6-slot*8.0f};
+        int slot=i%subject_count(s->layout);
+        if(s->layout==1) target=(Vec){-3,1,0};
+        else if(s->layout==2) target=(Vec){slot?3.5f:-3.5f,slot?1.5f:-1.5f,slot?-1:1};
+        else if(s->layout==3) target=(Vec){0,0,0};
         float compression=1-0.65f*s->tension;
         s->live.objects[i].x+=(target.x*compression-s->live.objects[i].x)*0.12f;
         s->live.objects[i].y+=(target.y*compression-s->live.objects[i].y)*0.12f;
         s->live.objects[i].z+=(target.z*compression-s->live.objects[i].z)*0.12f;
     }
     Vec target={0,0,0};
-    if(s->focus_index<3) target=s->live.objects[s->focus_index];
-    else for(int i=0;i<3;i++) {
-        target.x+=s->live.objects[i].x/3; target.y+=s->live.objects[i].y/3; target.z+=s->live.objects[i].z/3;
+    int count=subject_count(s->layout);
+    if(s->focus_index<3) target=s->live.objects[s->focus_index%count];
+    else for(int i=0;i<count;i++) {
+        target.x+=s->live.objects[i].x/count; target.y+=s->live.objects[i].y/count; target.z+=s->live.objects[i].z/count;
     }
     target.x+=0.06f*sinf(s->tick*0.011f); target.y+=0.04f*sinf(s->tick*0.017f);
     s->live.look_at.x+=(target.x-s->live.look_at.x)*0.42f;
@@ -235,7 +251,7 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         if(!slow) {
             float whip=s->motion_mode==3?0.2f*sinf(s->motion_phase*2):0;
             float reach=boosting?(accent?2.0f:0.85f):0;
-            float aim=fmaxf(-1.6f,fminf(1.6f,s->target_aim_x+whip+s->flow.x*reach));
+            float aim=fmaxf(-1.6f,fminf(1.6f,s->target_aim_x+whip+s->flow.x*reach+(s->layout==1?0.3f:0)));
             float aim_y=fmaxf(-1.6f,fminf(1.6f,s->target_aim_y+s->flow.y*reach));
             s->live.fov+=(s->target_fov-s->live.fov)*0.28f;
 
@@ -251,14 +267,14 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
         s->spin_velocity*=0.85f; s->burst_velocity*=0.86f;
         if(accent || s->live.burst>1.2f) s->overdrive=1;
         else s->overdrive+=((float[]){0,0.18f,0.72f,1}[s->gear]-s->overdrive)*0.1f;
-        float mask_target=(accent || s->flash_ticks)?1:0;
+        float mask_target=accent?1:0;
         s->mask_env+=(mask_target-s->mask_env)*(mask_target?0.3f:0.18f);
         if(s->mask_env<0.001f) s->mask_env=0;
-        if(s->flash_ticks) s->flash_ticks--;
         if(s->shake_cooldown) s->shake_cooldown--;
         if(slow) {
             unsigned step=(++s->stutter_tick/8)%4;
             s->live.world_cam=s->stutter_anchor.world_cam;
+            s->live.tunnel_distance=wrap(s->stutter_anchor.tunnel_distance+step*0.9f,192);
             s->live.world_cam.x=wrap(s->live.world_cam.x+s->stutter_flow.x*step*0.9f,96);
             s->live.world_cam.y=wrap(s->live.world_cam.y+s->stutter_flow.y*step*0.9f,96);
             s->live.world_cam.z=wrap(s->live.world_cam.z+s->stutter_flow.z*step*0.9f,96);

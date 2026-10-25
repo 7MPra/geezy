@@ -3,6 +3,7 @@
 #include "../source/font.h"
 #include "../source/chrome.h"
 #include "../source/grid.h"
+#include "../source/geometry.h"
 static int closef(float a,float b) { return fabsf(a-b)<0.001f; }
 int main(void) {
     Synth s; reset(&s);
@@ -324,7 +325,7 @@ int main(void) {
         assert(s.reflection==1 && s.seed==7);
         controls(&s,reverse?KEY_ONE:KEY_B); controls(&s,KEY_B|KEY_ONE);
         controls(&s,0); int mask=s.mask_pattern; hit(&s,1);
-        assert(mask==1 && s.mask_pattern==mask && s.seed==7);
+        assert(mask==(reverse?1:2) && s.mask_pattern==mask && s.seed==7);
     }
     reset(&s); controls(&s,KEY_A);
     for(int i=0;i<120;i++) advance(&s,1.0f/60,1,0,0);
@@ -397,5 +398,79 @@ int main(void) {
     }
     assert(!beam_gap((Vec){0,0,40},half,&enter,&leave));
     assert(beam_gap((Vec){0,0,0},half,&enter,&leave) && enter<-1 && leave>1);
+    // Only B opens the mask: camera cuts, palette/scene commands and release drops do not.
+    reset(&s);
+    const unsigned gestures[]={KEY_RIGHT,KEY_ONE,KEY_TWO,KEY_ONE|KEY_UP,KEY_A|KEY_TWO,KEY_MODS};
+    for(unsigned i=0;i<sizeof(gestures)/sizeof(gestures[0]);i++) {
+        controls(&s,gestures[i]); controls(&s,0); hit(&s,4);
+        for(int tick=0;tick<20;tick++) advance(&s,1.0f/60,0,0,0);
+        assert(s.mask_env==0);
+    }
+    reset(&s);
+    for(int i=1;i<=12;i++) {
+        controls(&s,KEY_B); controls(&s,KEY_B);
+        assert(s.mask_pattern==i%6);
+        advance(&s,1.0f/60,0,0,1); assert(s.mask_env>0);
+        controls(&s,0);
+        for(int tick=0;tick<60;tick++) advance(&s,1.0f/60,0,0,0);
+        assert(s.mask_env==0);
+    }
+    // HUD chord consumes the palette tap and does not change gear or repeat while held.
+    reset(&s); controls(&s,KEY_ONE); controls(&s,KEY_ONE|KEY_PLUS);
+    assert(!s.hud_visible && s.gear==1 && s.seed==7);
+    controls(&s,KEY_ONE|KEY_PLUS); controls(&s,KEY_PLUS); controls(&s,0);
+    assert(!s.hud_visible && s.gear==1 && s.seed==7);
+    controls(&s,KEY_ONE|KEY_PLUS); controls(&s,KEY_ONE); controls(&s,0);
+    assert(s.hud_visible && s.gear==1 && s.seed==7);
+    reset(&s);
+    for(int i=0;i<120;i++) advance(&s,1.0f/60,1,0,0);
+    assert(strobe_period(0)==6 && strobe_period(s.tension)==2);
+    for(unsigned period=2;period<=6;period++) {
+        s.tension=(6-period)/4.0f;
+        for(unsigned tick=0;tick<period*3;tick++) {
+            s.stutter_tick=tick;
+            assert(strobe_lit(&s)==(tick%period<period/2));
+        }
+    }
+    s.slow=0; assert(!strobe_lit(&s));
+    for(int layout=0;layout<4;layout++) {
+        reset(&s); s.layout=layout;
+        assert((subject_count(layout)==(int[]){3,1,2,1}[layout]));
+        for(int tick=0;tick<360;tick++) { if(tick%60==0) hit(&s,1); advance(&s,1.0f/60,0,1,0); }
+        Vec eye=orbit_eye(&s.draw); assert(isfinite(eye.x) && isfinite(eye.y) && isfinite(eye.z));
+        float len=s.live.tunnel_axis.x*s.live.tunnel_axis.x+s.live.tunnel_axis.y*s.live.tunnel_axis.y+s.live.tunnel_axis.z*s.live.tunnel_axis.z;
+        assert(closef(len,1));
+    }
+    reset(&s); s.layout=1;
+    for(int tick=0;tick<120;tick++) advance(&s,1.0f/60,0,0,0);
+    assert(closef(s.draw.aim_x,0.3f)); // Following the sole subject must not recenter its composition.
+    unsigned families=0,pairs=0; uint32_t signatures[512]; unsigned unique=0;
+    for(unsigned seed=0;seed<512;seed++) {
+        Sculpture g=sculpture(seed,seed%5,seed%3);
+        families|=1u<<g.family;
+        pairs|=1u<<(g.p==2?(g.q==3?0:3):(g.q==4?1:2));
+        assert(g.family<9 && g.slices>=8 && g.slices<=12 && g.rings>=3 && g.rings<=5);
+        assert(g.sides==4 || g.sides==8 || g.sides==12);
+        uint32_t signature=g.family+9*(g.p+4*(g.q+6*(g.slices+13*(g.rings+6*(g.sides+13*(g.profile+3*g.glyph))))));
+        unsigned found=0; for(unsigned j=0;j<unique;j++) if(signatures[j]==signature) found=1;
+        if(!found) signatures[unique++]=signature;
+        Vec a=knot_center(0,g.p,g.q),b=knot_center(6.2831853f,g.p,g.q),n,v;
+        assert(closef(a.x,b.x) && closef(a.y,b.y) && closef(a.z,b.z));
+        for(int i=0;i<96;i++) {
+            knot_frame(i*6.2831853f/96,g.p,g.q,&n,&v);
+            assert(closef(n.x*n.x+n.y*n.y+n.z*n.z,1));
+            assert(closef(v.x*v.x+v.y*v.y+v.z*v.z,1));
+            assert(closef(n.x*v.x+n.y*v.y+n.z*v.z,0));
+            float r=super_radius(i*6.2831853f/96,g.symmetry,g.sharpness);
+            assert(isfinite(r) && r>=0.45f && r<=1.5f);
+        }
+    }
+    assert(families==511 && pairs==15 && unique>400);
+    for(unsigned ring=0;ring<24;ring++) for(int i=0;i<400;i++) {
+        float a=tunnel_depth(ring,i*0.5f),b=tunnel_depth(ring,(i+1)*0.5f);
+        assert(closef(wrap(b-a,192),-0.5f));
+        if(fabsf(b-a)>1) assert(tunnel_fade(a)==0 && tunnel_fade(b)==0);
+        assert(closef(a,tunnel_depth(ring,i*0.5f+192)));
+    }
     return 0;
 }

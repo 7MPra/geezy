@@ -1,12 +1,14 @@
-param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[ValidateRange(0,3)][int]$Beams=0)
+param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[ValidateRange(0,3)][int]$Beams=0)
 $ErrorActionPreference='Stop'
-if($Lattice -and $Checker){throw 'Choose either -Lattice or -Checker'}
+if((@($Lattice,$Checker,$Sculptures,$Trail) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
 Push-Location (Split-Path $PSScriptRoot -Parent)
 $process=$null
 try {
     $build='/opt/devkitpro/devkitPPC/bin/powerpc-eabi-gcc -O2 -Wall -Wextra -DGEKKO -DGEEZY_VISUAL_CHECK -mrvl -mcpu=750 -meabi -mhard-float -I/opt/devkitpro/libogc/include source/main.c -L/opt/devkitpro/libogc/lib/wii -lwiiuse -lbte -logc -lm -o geezy-check.elf && /opt/devkitpro/tools/bin/elf2dol geezy-check.elf geezy-check.dol'
     if($Lattice){$build=$build.Replace('-DGEEZY_VISUAL_CHECK',"-DGEEZY_VISUAL_CHECK -DGEEZY_LATTICE_CHECK -DGEEZY_BEAM_STYLE=$Beams")}
     if($Checker){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_CHECKER_CHECK')}
+    if($Sculptures){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_SCULPTURE_CHECK')}
+    if($Trail){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_TRAIL_CHECK')}
     docker run --rm --mount "type=bind,source=$pwd,target=/project" -w /project devkitpro/devkitppc:latest bash -lc $build
     if($LASTEXITCODE -ne 0){throw 'Visual check build failed'}
     New-Item -ItemType Directory -Force .dolphin-check/Config,artifacts | Out-Null
@@ -60,8 +62,8 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    $count=if($Checker){96}elseif($Lattice){64}else{26}
-    $prefix=if($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
+    $count=if($Sculptures){156}elseif($Trail){96}elseif($Checker){96}elseif($Lattice){64}else{26}
+    $prefix=if($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     for($i=0;$i -lt $count;$i++) {
         $r=New-Object GeezyCapture+Rect
@@ -84,13 +86,18 @@ public static int NeonPixels(byte[] pixels) {
         $mixed=$bytes.Length/4-$black-$white-$neon
         $results+=[pscustomobject]@{frame=$i;seconds=$timer.Elapsed.TotalSeconds;pixels=$bytes.Length/4;blackPixels=$black;whitePixels=$white;neonPixels=$neon;mixedPixels=$mixed;hash=(Get-FileHash $file).Hash;file=$file}
         $graphics.Dispose();$bitmap.Dispose()
-        Start-Sleep -Milliseconds $(if($Lattice -or $Checker){100}else{1000})
+        Start-Sleep -Milliseconds $(if($Sculptures){500}elseif($Lattice -or $Checker -or $Trail){100}else{1000})
     }
     $results | ConvertTo-Json | Set-Content "artifacts/$prefix-check.json"
     $results | Format-Table frame,blackPixels,whitePixels,neonPixels,mixedPixels
     # RGB channel displacement is inspected alongside the black/white/neon frame checks.
-    if(!$Lattice -and !$Checker -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
-    if(($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
+    if(!$Lattice -and !$Checker -and !$Trail -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
+    if($Trail) {
+        if(!($results | Where-Object { $_.blackPixels -eq $_.pixels })){throw 'Trail did not decay to exact black'}
+        if(!($results | Where-Object { $_.whitePixels -gt 1000 })){throw 'Trail source was not rendered'}
+        if(!($results | Where-Object { $_.whitePixels -eq 0 -and $_.mixedPixels -gt 1000 })){throw 'Recursive trail was not rendered'}
+    }
+    if(!$Trail -and ($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
     if($Checker) {
         foreach($frame in $results) {
             $coverage=$frame.blackPixels/$frame.pixels

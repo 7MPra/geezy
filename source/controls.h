@@ -25,7 +25,13 @@ static inline int controls(Synth *s,unsigned held) {
     if((held&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS)) {
         reset(s); s->held_buttons=held; return 1;
     }
+    if(down&KEY_B) s->mask_pattern=(s->mask_pattern+1)%6;
     s->pending_taps|=down&KEY_MODS;
+    if((held&(KEY_ONE|KEY_PLUS))==(KEY_ONE|KEY_PLUS)) {
+        s->pending_taps&=~KEY_ONE; s->remix_pending=0;
+        if(down&(KEY_ONE|KEY_PLUS)) s->hud_visible=!s->hud_visible;
+        return 0;
+    }
     unsigned mods=held&KEY_MODS,arrows=held&KEY_ARROWS;
     int direction=arrows==KEY_UP?0:arrows==KEY_RIGHT?1:arrows==KEY_DOWN?2:arrows==KEY_LEFT?3:-1;
     int dirty=0,impulse=0;
@@ -49,13 +55,14 @@ static inline int controls(Synth *s,unsigned held) {
         s->pending_taps&=~mods; s->remix_pending=0;
         unsigned modifier=held&KEY_B?KEY_B:KEY_A;
         if(down&(mods|modifier)) {
-            if(modifier==KEY_B && mods==KEY_ONE) s->mask_pattern=(s->mask_pattern+1)%6;
+            if(modifier==KEY_B && mods==KEY_ONE) {
+                if(!(down&KEY_B)) s->mask_pattern=(s->mask_pattern+1)%6;
+            }
             else if(modifier==KEY_B) {
                 s->motion_mode=(s->motion_mode+1)%4;
                 s->motion_phase=s->grid_distance=0; s->grid_tick=0;
             } else if(mods==KEY_ONE) { s->reflection=(s->reflection+1)%4; dirty=1; }
             else s->shape=(s->shape+1)%5;
-            s->flash_ticks=12;
         }
     }
     if(!mods && s->remix_pending) {

@@ -8,16 +8,22 @@
 #include "font.h"
 #include "chrome.h"
 #include "grid.h"
+#include "geometry.h"
+#include <assert.h>
 #include <stdio.h>
 
 static Synth synth;
+#ifdef GEEZY_SCULPTURE_CHECK
+static unsigned check_sculpture;
+#endif
 static volatile int quitting;
 static GXRModeObj *mode;
-static GXTexObj chrome_tex, grid_tex, history, dither_tex;
+static GXTexObj chrome_tex, grid_tex, history, dither_tex, trail_tex;
 static u16 chrome_pixels[128*128] ATTRIBUTE_ALIGN(32);
 static u16 grid_pixels[GRID_TEXELS] ATTRIBUTE_ALIGN(32);
 static u8 dither_pixels[64] ATTRIBUTE_ALIGN(32);
-static void *history_pixels;
+static void *history_pixels, *trail_pixels;
+static int trail_valid, shell_surface;
 static int quantize_vertices;
 static float aspect;
 static Mtx view;
@@ -70,11 +76,19 @@ static void material(GXTexObj *texture) {
     if(texture) GX_LoadTexObj(texture,GX_TEXMAP0);
 }
 static void surface(int kind) {
+    if(primary_surface && synth.skin==3) kind=WIRE;
     if(primary_surface && kind==CHROME) kind=(int[]){CHROME,GRID,GHOST,WIRE}[synth.skin];
     surface_kind=kind;
     material(kind==CHROME?&chrome_tex:kind==GRID?&grid_tex:kind==GHOST?&chrome_tex:NULL);
     if(kind==MATTE) tint=(GXColor){0,0,0,255};
     if(kind==WIRE) tint=(synth.seed&1)?(GXColor){0,255,255,255}:(GXColor){255,255,255,255};
+    if(kind==WIRE) { GX_SetLineWidth(10,GX_TO_ZERO); GX_SetPointSize(16,GX_TO_ZERO); }
+    if(synth.slow) {
+        material(NULL);
+        int white=shell_surface?strobe_lit(&synth):!strobe_lit(&synth);
+        tint=white?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
+        return;
+    }
     if(kind==GHOST) {
         GX_SetNumTevStages(2); GX_SetNumTexGens(2);
         Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=16;
@@ -92,37 +106,42 @@ static void vertex(Vec p,float u,float v,u8 shade,u8 alpha) {
     if(quantize_vertices) p=(Vec){snap_vertex(p.x),snap_vertex(p.y),snap_vertex(p.z)};
     GX_Position3f32(p.x,p.y,p.z); GX_Color4u8(shade*tint.r/255,shade*tint.g/255,shade*tint.b/255,alpha); GX_TexCoord2f32(u,v);
 }
-static Vec add(Vec a,Vec b) { return (Vec){a.x+b.x,a.y+b.y,a.z+b.z}; }
-static Vec rotate(Vec p,float a,float b) {
-    float x=p.x*cosf(a)+p.z*sinf(a),z=-p.x*sinf(a)+p.z*cosf(a);
-    return (Vec){x,p.y*cosf(b)-z*sinf(b),p.y*sinf(b)+z*cosf(b)};
-}
-static Vec scale_vec(Vec p,float scale) { return (Vec){p.x*scale,p.y*scale,p.z*scale}; }
-static Vec unit(Vec p) {
-    float len=sqrtf(p.x*p.x+p.y*p.y+p.z*p.z);
-    return len>0.00001f?scale_vec(p,1/len):(Vec){0,1,0};
-}
-static Vec cross(Vec a,Vec b) { return (Vec){a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
 static void normal_vertex(Vec p,Vec n,u8 shade) {
     float nx=view[0][0]*n.x+view[0][1]*n.y+view[0][2]*n.z;
     float ny=view[1][0]*n.x+view[1][1]*n.y+view[1][2]*n.z;
     vertex(p,0.5f+nx*0.48f,0.5f-ny*0.48f+(surface_kind==GRID?synth.draw.uv_shift*6:0),shade,255);
 }
-static void triangle(Vec a,Vec b,Vec c,u8 shade) {
-    Vec n=unit(cross(add(b,scale_vec(a,-1)),add(c,scale_vec(a,-1))));
-    Vec p[3]={a,b,c};
-    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,3);
-    for(int i=0;i<3;i++) normal_vertex(p[i],n,shade);
+// All 3D primitives share this guard: WIRE can never submit a filled face.
+static void begin_3d(u8 primitive,u16 count) {
+    assert(surface_kind!=WIRE || primitive==GX_LINES || primitive==GX_LINESTRIP || primitive==GX_POINTS);
+    GX_Begin(primitive,GX_VTXFMT0,count);
+}
+static void wire_points(const Vec *p,int count,u8 shade) {
+    begin_3d(GX_POINTS,count);
+    for(int i=0;i<count;i++) vertex(p[i],0,0,shade,255);
     GX_End();
 }
-static void box(Vec center,Vec size,float angle,u8 shade) {
-    Vec p[8];
-    for(int i=0;i<8;i++) p[i]=add(center,rotate((Vec){i&1?size.x:-size.x,i&2?size.y:-size.y,i&4?size.z:-size.z},angle,angle*0.37f));
+static void triangle(Vec a,Vec b,Vec c,u8 shade) {
+    Vec n=unit(cross(add(b,scale_vec(a,-1)),add(c,scale_vec(a,-1))));
+    Vec p[3]={a,b,c}; int count=surface_kind==WIRE?4:3;
+    begin_3d(surface_kind==WIRE?GX_LINESTRIP:GX_TRIANGLES,count);
+    for(int i=0;i<count;i++) normal_vertex(p[i%3],n,shade);
+    GX_End();
+    if(surface_kind==WIRE) wire_points(p,3,shade);
+}
+static void box_vertices(const Vec p[8],u8 shade) {
+    if(surface_kind==WIRE) {
+        begin_3d(GX_LINES,24);
+        for(int i=0;i<8;i++) for(int bit=1;bit<=4;bit*=2) if(!(i&bit)) {
+            vertex(p[i],0,0,shade,255); vertex(p[i|bit],0,0,shade,255);
+        }
+        GX_End(); wire_points(p,8,shade); return;
+    }
     static const int faces[24]={0,2,3,1,4,5,7,6,0,1,5,4,2,6,7,3,0,4,6,2,1,3,7,5};
     for(int f=0;f<6;f++) {
         Vec a=p[faces[f*4]],b=p[faces[f*4+1]],c=p[faces[f*4+2]];
         Vec n=unit(cross(add(b,scale_vec(a,-1)),add(c,scale_vec(a,-1))));
-        GX_Begin(GX_QUADS,GX_VTXFMT0,4);
+        begin_3d(GX_QUADS,4);
         for(int j=0;j<4;j++) {
             Vec q=p[faces[f*4+j]];
             if(surface_kind==GRID || surface_kind==GHOST)
@@ -131,6 +150,18 @@ static void box(Vec center,Vec size,float angle,u8 shade) {
         }
         GX_End();
     }
+}
+static void box(Vec center,Vec size,float angle,u8 shade) {
+    Vec p[8];
+    for(int i=0;i<8;i++) p[i]=add(center,rotate((Vec){i&1?size.x:-size.x,i&2?size.y:-size.y,i&4?size.z:-size.z},angle,angle*0.37f));
+    box_vertices(p,shade);
+}
+static void beam(Vec a,Vec b,float width,u8 shade) {
+    Vec axis=unit(add(b,scale_vec(a,-1)));
+    Vec side=scale_vec(unit(cross(axis,fabsf(axis.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0})),width);
+    Vec up=scale_vec(unit(cross(axis,side)),width),p[8];
+    for(int i=0;i<8;i++) p[i]=add(i&4?b:a,add(scale_vec(side,i&1?1:-1),scale_vec(up,i&2?1:-1)));
+    box_vertices(p,shade);
 }
 static void ortho(void) {
     quantize_vertices=0;
@@ -158,6 +189,30 @@ static void feedback_echo(void) {
     }
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
+static void feedback_trail(void) {
+    if(!trail_valid || synth.slow) return;
+    ortho(); material(&trail_tex);
+    float amount=0.25f+0.55f*synth.overdrive+0.025f*synth.gear;
+    float zoom=1.02f+0.04f*synth.overdrive,angle=0.008f+synth.overdrive*0.018f;
+    // Subtract before gain: black remains exactly zero and old highlights eventually disappear.
+    GX_SetTevColor(GX_TEVREG0,(GXColor){24,24,24,255});
+    GX_SetTevColorIn(GX_TEVSTAGE0,GX_CC_C0,GX_CC_ZERO,GX_CC_ZERO,GX_CC_TEXC);
+    GX_SetTevColorOp(GX_TEVSTAGE0,GX_TEV_SUB,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+    GX_SetNumTevStages(2);
+    GX_SetTevOrder(GX_TEVSTAGE1,GX_TEXCOORDNULL,GX_TEXMAP_NULL,GX_COLOR0A0);
+    GX_SetTevColorIn(GX_TEVSTAGE1,GX_CC_ZERO,GX_CC_CPREV,GX_CC_RASC,GX_CC_ZERO);
+    GX_SetTevColorOp(GX_TEVSTAGE1,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+    GX_SetTevAlphaIn(GX_TEVSTAGE1,GX_CA_ZERO,GX_CA_ZERO,GX_CA_ZERO,GX_CA_APREV);
+    GX_SetTevAlphaOp(GX_TEVSTAGE1,GX_TEV_ADD,GX_TB_ZERO,GX_CS_SCALE_1,GX_TRUE,GX_TEVPREV);
+    GX_SetBlendMode(GX_BM_BLEND,GX_BL_ONE,GX_BL_ONE,GX_LO_COPY);
+    GX_Begin(GX_QUADS,GX_VTXFMT0,4);
+    for(int i=0;i<4;i++) {
+        float x=(i==0||i==3)?-1:1,y=i<2?1:-1;
+        float u=(x*cosf(angle)-y*sinf(angle))/zoom,v=(x*sinf(angle)+y*cosf(angle))/zoom;
+        vertex((Vec){x,y,-1},0.5f+u*0.5f,0.5f-v*0.5f,(u8)(amount*255),255);
+    }
+    GX_End(); GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+}
 static void projection(void) {
     quantize_vertices=synth.slow;
     Mtx44 p; guPerspective(p,synth.draw.fov,aspect,0.2f,220);
@@ -168,19 +223,45 @@ static void projection(void) {
     guVector axis={0,0,1}; guMtxRotAxisDeg(bank,&axis,synth.draw.roll);
     guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
 }
-static void torus(Vec center,float radius,float tube,float a,float b) {
-    surface(CHROME);
-    for(int i=0;i<32;i++) {
-        GX_Begin(GX_TRIANGLESTRIP,GX_VTXFMT0,26);
-        for(int j=0;j<=12;j++) for(int k=0;k<2;k++) {
-            float u=(i+k)*6.2831853f/32,v=j*6.2831853f/12;
-            Vec n={cosf(u)*cosf(v),sinf(u)*cosf(v),sinf(v)};
-            Vec p={(radius+tube*cosf(v))*cosf(u),(radius+tube*cosf(v))*sinf(u),tube*sinf(v)};
-            normal_vertex(add(center,rotate(p,a,b)),rotate(n,a,b),255);
+static Vec mesh_pos[97][13],mesh_normal[97][13];
+static void mesh(int rows,int cols,Vec center,float size,float a,float b) {
+    for(int i=0;i<=rows;i++) for(int j=0;j<=cols;j++) {
+        mesh_pos[i][j]=add(center,scale_vec(rotate(mesh_pos[i][j],a,b),size));
+        mesh_normal[i][j]=rotate(mesh_normal[i][j],a,b);
+    }
+    if(surface_kind==WIRE) {
+        for(int i=0;i<=rows;i+=2) {
+            begin_3d(GX_LINESTRIP,cols+1);
+            for(int j=0;j<=cols;j++) normal_vertex(mesh_pos[i][j],mesh_normal[i][j],255);
+            GX_End();
         }
+        for(int j=0;j<cols;j++) {
+            begin_3d(GX_LINESTRIP,rows+1);
+            for(int i=0;i<=rows;i++) normal_vertex(mesh_pos[i][j],mesh_normal[i][j],255);
+            GX_End();
+        }
+        for(int i=0;i<rows;i+=4) wire_points(mesh_pos[i],cols,255);
+    } else for(int i=0;i<rows;i++) {
+        begin_3d(GX_TRIANGLESTRIP,2*(cols+1));
+        for(int j=0;j<=cols;j++) for(int k=0;k<2;k++) normal_vertex(mesh_pos[i+k][j],mesh_normal[i+k][j],255);
         GX_End();
     }
 }
+static void ring(Vec center,float radius,float tube,float a,float b,int sides,float arc) {
+    surface(CHROME);
+    for(int i=0;i<=32;i++) for(int j=0;j<=sides;j++) {
+        float u=i*arc/32,v=j*6.2831853f/sides;
+        mesh_normal[i][j]=(Vec){cosf(u)*cosf(v),sinf(u)*cosf(v),sinf(v)};
+        mesh_pos[i][j]=(Vec){(radius+tube*cosf(v))*cosf(u),(radius+tube*cosf(v))*sinf(u),tube*sinf(v)};
+    }
+    mesh(32,sides,center,1,a,b);
+    if(arc<6.28f) for(int end=0;end<2;end++) {
+        float u=end?arc:0;
+        Vec cap=add(center,rotate((Vec){radius*cosf(u),radius*sinf(u),0},a,b));
+        for(int j=0;j<sides;j++) triangle(cap,mesh_pos[end?32:0][j],mesh_pos[end?32:0][j+1],255);
+    }
+}
+static void torus(Vec center,float radius,float tube,float a,float b) { ring(center,radius,tube,a,b,12,6.2831853f); }
 static void octahedron(Vec center,float size,float angle,int kind,int cage) {
     const Vec axis[6]={{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
     static const int faces[24]={0,2,4,2,1,4,1,3,4,3,0,4,2,0,5,1,2,5,3,1,5,0,3,5};
@@ -191,19 +272,27 @@ static void octahedron(Vec center,float size,float angle,int kind,int cage) {
         p[i]=add(center,scale_vec(n[i],size*spike));
     }
     surface(kind);
-    GX_Begin(GX_TRIANGLES,GX_VTXFMT0,24);
-    for(int i=0;i<24;i++) normal_vertex(p[faces[i]],n[faces[i]],255);
-    GX_End();
+    if(surface_kind==WIRE) {
+        begin_3d(GX_LINES,24);
+        for(int i=0;i<6;i++) for(int j=i+1;j<6;j++) if(i/2!=j/2) {
+            normal_vertex(p[i],n[i],255); normal_vertex(p[j],n[j],255);
+        }
+        GX_End(); wire_points(p,6,255);
+    } else {
+        begin_3d(GX_TRIANGLES,24);
+        for(int i=0;i<24;i++) normal_vertex(p[faces[i]],n[faces[i]],255);
+        GX_End();
+    }
     if(!cage) return;
     surface(WIRE); GX_SetLineWidth(10,GX_TO_ZERO); GX_SetPointSize(20,GX_TO_ZERO);
     for(int shell=0;shell<2;shell++) {
         for(int i=0;i<6;i++) p[i]=add(center,scale_vec(rotate(axis[i],-angle*(1+shell*0.4f),angle*0.7f+shell*0.5f),size*(1.25f+shell*0.3f)));
-        GX_Begin(GX_LINES,GX_VTXFMT0,24);
+        begin_3d(GX_LINES,24);
         for(int i=0;i<6;i++) for(int j=i+1;j<6;j++) if(i/2!=j/2) {
             vertex(p[i],0,0,255,255); vertex(p[j],0,0,255,255);
         }
         GX_End();
-        GX_Begin(GX_POINTS,GX_VTXFMT0,6);
+        begin_3d(GX_POINTS,6);
         for(int i=0;i<6;i++) vertex(p[i],0,0,255,255);
         GX_End();
     }
@@ -223,31 +312,138 @@ static void stellar(Vec center,float size,float angle) {
         for(int j=0;j<4;j++) triangle(corner[order[j]],corner[order[(j+1)%4]],tip,255);
     }
 }
-static void frame_cluster(Vec center,float angle) {
+static void frame_cluster(Vec center,float angle,float scale) {
     surface(CHROME);
     for(int shell=0;shell<2;shell++) for(int side=0;side<4;side++) {
         float a=angle*(shell?-1:1),radius=2.8f-shell*0.9f;
         Vec offset={side<2?(side?radius:-radius):0,side>=2?(side==3?radius:-radius):0,0};
         Vec size=side<2?(Vec){0.4f,radius+0.4f,0.55f}:(Vec){radius-0.4f,0.4f,0.55f};
-        box(add(center,rotate(offset,a,a*0.37f)),size,a,255);
+        box(add(center,scale_vec(rotate(offset,a,a*0.37f),scale)),scale_vec(size,scale),a,255);
+    }
+}
+static void knot(Vec center,float size,float angle,Sculpture g) {
+    surface(CHROME);
+    for(int i=0;i<=96;i++) {
+        float t=(i%96)*6.2831853f/96;
+        Vec c=knot_center(t,g.p,g.q),normal,side; knot_frame(t,g.p,g.q,&normal,&side);
+        for(int j=0;j<=8;j++) {
+            float v=j*6.2831853f/8;
+            mesh_normal[i][j]=add(scale_vec(normal,cosf(v)),scale_vec(side,sinf(v)));
+            mesh_pos[i][j]=add(c,scale_vec(mesh_normal[i][j],g.tube));
+        }
+    }
+    mesh(96,8,center,size,angle,angle*0.43f);
+}
+static void polygon_slab(Vec center,float radius,float height,float angle,int sides) {
+    Vec p[24];
+    for(int layer=0;layer<2;layer++) for(int i=0;i<sides;i++) {
+        float a=i*6.2831853f/sides;
+        p[layer*sides+i]=add(center,rotate((Vec){radius*cosf(a),layer?height:-height,radius*sinf(a)},angle,angle*0.37f));
+    }
+    if(surface_kind==WIRE) {
+        begin_3d(GX_LINES,sides*6);
+        for(int i=0;i<sides;i++) {
+            for(int layer=0;layer<2;layer++) {
+                vertex(p[layer*sides+i],0,0,255,255); vertex(p[layer*sides+(i+1)%sides],0,0,255,255);
+            }
+            vertex(p[i],0,0,255,255); vertex(p[sides+i],0,0,255,255);
+        }
+        GX_End(); wire_points(p,sides*2,255); return;
+    }
+    for(int i=0;i<sides;i++) {
+        int next=(i+1)%sides;
+        triangle(p[i],p[sides+i],p[next],255);
+        triangle(p[next],p[sides+i],p[sides+next],255);
+        for(int layer=0;layer<2;layer++) {
+            Vec cap=add(center,rotate((Vec){0,layer?height:-height,0},angle,angle*0.37f));
+            if(layer) triangle(cap,p[sides+next],p[sides+i],255);
+            else triangle(cap,p[i],p[next],255);
+        }
+    }
+}
+static void sliced(Vec center,float size,float angle,Sculpture g) {
+    for(unsigned i=0;i<g.slices;i++) {
+        float h=(i+0.5f)*2/g.slices-1;
+        float radius=g.profile==0?sqrtf(1-h*h):g.profile==1?1:1-fabsf(h);
+        float shift=(i%2?1:-1)*(0.15f+fminf(synth.draw.burst,4)*0.5f)*sinf(angle*2+i*0.4f);
+        Vec offset=rotate((Vec){shift,h*2.8f,0},angle,angle*0.37f);
+        surface(i%5==0?MATTE:CHROME);
+        Vec c=add(center,scale_vec(offset,size));
+        if(g.profile==1) box(c,(Vec){radius*2.6f*size,2.5f*size/g.slices,radius*2.6f*size},angle,255);
+        else polygon_slab(c,radius*2.6f*size,2.5f*size/g.slices,angle,g.profile==0?12:4);
+    }
+}
+static void glyph_totem(Vec center,float size,float angle,Sculpture g) {
+    const char *words[]={"HYPER","VOID",".+","01","ERR","WII",NULL};
+    char symbols[4]={".+:-|"[synth.seed%5],"01+[]"[(synth.seed>>4)%5],".+:-|"[(synth.seed>>8)%5],0};
+    const char *word=words[g.glyph]?words[g.glyph]:symbols;
+    int count=strlen(word); float dot=7.0f/(count*6);
+    surface(CHROME);
+    for(int i=0;i<count;i++) for(int y=0;y<5;y++) for(int x=0;x<5;x++) if(font_glyph(word[i])[y]&(1<<(4-x))) {
+        Vec offset={(i*6+x-(count*6-2)*0.5f)*dot,(2-y)*dot,0};
+        box(add(center,scale_vec(rotate(offset,angle,angle*0.37f),size)),
+            (Vec){dot*0.46f*size,dot*0.46f*size,(0.4f+g.tube)*size},angle,255);
+    }
+}
+static void polyform(Vec center,float size,float angle,Sculpture g) {
+    surface(CHROME);
+    for(int i=0;i<=32;i++) for(int j=0;j<=12;j++) {
+        float u=(i%32)*6.2831853f/32-3.14159265f,v=j*3.14159265f/12-1.5707963f;
+        float radius=super_radius(u,g.symmetry,g.sharpness)*super_radius(v,4,g.sharpness);
+        Vec n={cosf(v)*cosf(u),sinf(v),cosf(v)*sinf(u)};
+        mesh_pos[i][j]=scale_vec(n,2.8f*radius); mesh_normal[i][j]=n;
+    }
+    // Geometric neighbor normals keep chrome reflections attached to the changing lobes.
+    for(int i=0;i<32;i++) for(int j=1;j<12;j++) {
+        Vec du=add(mesh_pos[(i+1)%32][j],scale_vec(mesh_pos[(i+31)%32][j],-1));
+        Vec dv=add(mesh_pos[i][j+1],scale_vec(mesh_pos[i][j-1],-1));
+        mesh_normal[i][j]=unit(cross(dv,du));
+    }
+    for(int j=0;j<=12;j++) mesh_normal[32][j]=mesh_normal[0][j];
+    mesh(32,12,center,size,angle,angle*0.37f);
+    for(unsigned i=0;i<g.profile+2;i++) {
+        Vec offset=rotate((Vec){(i%2?1:-1)*3.0f,1.4f-i*1.1f,0.5f},angle,angle*0.37f);
+        octahedron(add(center,scale_vec(offset,size)),size*(0.5f+g.tube),-angle, i%2?MATTE:CHROME,0);
+    }
+}
+static void sculpture_draw(Vec center,float size,float phase,Sculpture g) {
+    switch(g.family) {
+    case 0:
+        torus(center,2.4f*size,(0.6f+g.tube)*size,phase,phase*0.45f);
+        torus(center,1.5f*size,g.tube*size,-phase*1.3f,1.57f+phase*0.6f); break;
+    case 1: octahedron(center,3*size,phase,CHROME,1); break;
+    case 2: stellar(center,(1.1f+g.tube)*size,phase); break;
+    case 3: frame_cluster(center,phase,size); break;
+    case 4: knot(center,size,phase,g); break;
+    case 5: sliced(center,size,phase,g); break;
+    case 6:
+        for(unsigned r=0;r<g.rings;r++) ring(center,(1.4f+r*0.48f)*size,(g.tube*0.7f+r*0.04f)*size,
+            phase*(r%2?-1:1)+r*0.6f,phase*0.6f+r*1.1f,g.sides,(r%2?1.6f:2)*3.14159265f);
+        break;
+    case 7: glyph_totem(center,size,phase,g); break;
+    case 8: polyform(center,size,phase,g); break;
     }
 }
 static void mega(void) {
     primary_surface=1;
-    static const int arrangement[5][3]={{0,1,2},{0,0,0},{1,2,2},{2,0,1},{3,0,1}};
-    for(int i=0;i<3;i++) {
+    int count=subject_count(synth.layout);
+    for(int i=0;i<count;i++) {
         Vec center=synth.draw.objects[i];
         float jitter=fmaxf(0,synth.tension-0.4f)*0.3f;
         center.x+=jitter*sinf(synth.tick*2.4f+i); center.y+=jitter*cosf(synth.tick*2.1f+i);
         float phase=synth.draw.phase*(i%2?-1:1)+i*0.8f;
-        int kind=arrangement[synth.shape][i];
-        float size=(i==0?1.35f:1.05f);
-        if(kind==0) {
-            torus(center,2.4f*size,0.85f*size,phase,phase*0.45f);
-            torus(center,1.5f*size,0.55f*size,-phase*1.3f,1.57f+phase*0.6f);
-        } else if(kind==1) octahedron(center,3*size,phase,i==2?MATTE:CHROME,1);
-        else if(kind==2) stellar(center,1.55f*size,phase);
-        else frame_cluster(center,phase);
+        float size=synth.layout==1?2.0f:synth.layout==2?1.4f:(i==0?1.35f:1.05f);
+        Sculpture g=sculpture(synth.seed,synth.shape,i);
+#ifdef GEEZY_SCULPTURE_CHECK
+        g.family=check_sculpture;
+#endif
+        sculpture_draw(center,size,phase,g);
+        if(synth.layout==3) for(unsigned j=0;j<g.rings;j++) {
+            float a=phase*1.4f+j*6.2831853f/g.rings;
+            Vec offset=rotate((Vec){7*cosf(a),7*sinf(a),0},phase*0.4f,0.7f);
+            Sculpture satellite=sculpture(synth.seed,synth.shape,j+1);
+            sculpture_draw(add(center,scale_vec(offset,1-synth.tension*0.65f)),0.35f, -phase+j,satellite);
+        }
     }
     primary_surface=0;
 }
@@ -274,7 +470,7 @@ static void rail_segment(Vec fixed,Vec eye,int axis,float start,float end,float 
             else { p[j].z=along; p[j].x+=corner[c][0]*w; p[j].y+=corner[c][1]*h; }
             shade[j]=(u8)(255*lattice_fade(p[j],eye));
         }
-        GX_Begin(GX_QUADS,GX_VTXFMT0,16);
+        begin_3d(GX_QUADS,16);
         for(int side=0;side<4;side++) for(int j=0;j<4;j++) {
             int c=(side+(j==1||j==2))%4+(j>=2?4:0);
             vertex(p[c],(j==1||j==2)?1:0,((j<2?a:b)+world)/24+flow,shade[c],255);
@@ -294,7 +490,7 @@ static void truss_segment(Vec center,Vec diagonal,Vec eye,float width,float flow
         shades[i]=(u8)(255*lattice_fade(p[i],eye)); visible|=shades[i];
     }
     if(!visible) return;
-    GX_Begin(GX_QUADS,GX_VTXFMT0,16);
+    begin_3d(GX_QUADS,16);
     for(int face=0;face<4;face++) for(int j=0;j<4;j++) {
         int c=(face+(j==1||j==2))%4+(j>=2?4:0);
         vertex(p[c],(j==1||j==2)?1:0,(j<2?start:end)*length/24+flow,shades[c],255);
@@ -379,6 +575,52 @@ static void vector_tunnel(void) {
         Vec a=add(tail,scale_vec(tangent,0.32f)),b=add(tail,scale_vec(tangent,-0.32f));
         Vec c=add(tail,scale_vec(side,0.32f));
         triangle(tip,a,c,shade); triangle(tip,c,b,shade); triangle(tip,b,a,shade);
+    }
+    quantize_vertices=synth.slow;
+}
+static Vec dome_direction(int row,int col) {
+    float longitude=(col%24)*6.2831853f/24,latitude=row*3.14159265f/12;
+    return (Vec){sinf(latitude)*cosf(longitude),cosf(latitude),sinf(latitude)*sinf(longitude)};
+}
+static void dome(void) {
+    Vec eye=orbit_eye(&synth.draw);
+    quantize_vertices=0; shell_surface=1;
+    GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
+    for(int row=0;row<12;row++) for(int col=0;col<24;col++) {
+        surface((row+col+synth.shape)%3?CHROME:GRID);
+        u8 shade=(row+col)%7==0?0:255;
+        begin_3d(GX_QUADS,4);
+        for(int j=0;j<4;j++) {
+            Vec n=dome_direction(row+(j>=2),col+(j==1||j==2));
+            float wave=sinf(n.x*5+n.z*3+synth.draw.phase)*8;
+            Vec pos=add(eye,scale_vec(n,150+wave));
+            if(surface_kind==GRID) vertex(pos,(j==1||j==2)?1:0,(j>=2?1:0)+synth.draw.uv_shift*3,shade,255);
+            else normal_vertex(pos,scale_vec(n,-1),shade);
+        }
+        GX_End();
+    }
+    shell_surface=0; quantize_vertices=synth.slow;
+    GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
+}
+static void warp_tunnel(void) {
+    const Pose *p=synth.slow?&synth.draw:&synth.live;
+    Vec eye=orbit_eye(&synth.draw),axis=p->tunnel_axis;
+    Vec right=unit(cross(axis,fabsf(axis.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0})),up=cross(right,axis);
+    int sides=(int[]){6,8,12}[(synth.seed>>4)%3];
+    quantize_vertices=0;
+    for(int ring=0;ring<24;ring++) {
+        float depth=tunnel_depth(ring,p->tunnel_distance),fade=tunnel_fade(depth);
+        if(fade<=0) continue;
+        Vec center=add(eye,scale_vec(axis,depth));
+        float twist=ring*6.2831853f/12+synth.draw.phase*0.2f;
+        float radius=14+(ring%3)*0.8f;
+        surface(ring%3==0?CHROME:GRID);
+        for(int side=0;side<sides;side++) {
+            float a=side*6.2831853f/sides+twist,b=(side+1)*6.2831853f/sides+twist;
+            Vec start=add(center,add(scale_vec(right,cosf(a)*radius),scale_vec(up,sinf(a)*radius)));
+            Vec end=add(center,add(scale_vec(right,cosf(b)*radius),scale_vec(up,sinf(b)*radius)));
+            beam(start,end,0.45f+synth.overdrive*0.45f,(u8)(255*fade));
+        }
     }
     quantize_vertices=synth.slow;
 }
@@ -469,28 +711,53 @@ static void telemetry(void) {
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
 static void render(void) {
+#ifdef GEEZY_TRAIL_CHECK
+    GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    feedback_trail();
+    if(synth.tick%240<120) {
+        ortho(); material(NULL); mask_rect(-0.3f,-0.3f,0.6f,0.6f);
+    }
+    GX_CopyTex(trail_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
+    trail_valid=1; return;
+#endif
 #ifdef GEEZY_CHECKER_CHECK
     ortho(); material(NULL);
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     tint=(GXColor){0,0,0,255}; mask_rect(-1,-1,2,2);
     synth.mask_pattern=1; synth.mask_env=1; overlay(); return;
 #endif
+    static unsigned last_tick;
+    if(synth.tick<last_tick) trail_valid=0;
+    last_tick=synth.tick;
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
+    if(synth.slow) {
+        ortho(); material(NULL);
+        tint=strobe_lit(&synth)?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
+        mask_rect(-1,-1,2,2);
+        trail_valid=0; // A white strobe must not seed a persistent white trail after release.
+    }
     projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
+    if(synth.gear==3 || synth.backdrop==2) dome();
     if(synth.backdrop==0 || synth.backdrop==2) swarm();
+    if(synth.backdrop==1) warp_tunnel();
     if(synth.backdrop!=2) vector_tunnel();
 #ifndef GEEZY_LATTICE_CHECK
+    feedback_trail();
+    projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
     mega();
 #else
-    (void)mega;
+    (void)mega; (void)feedback_trail;
 #endif
-    // Capture the clean scene before masks/UI, avoiding recursive color contamination.
     if(synth.draw.burst>0.5f || synth.tension>0.3f) {
         GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
         feedback_echo();
     }
 #ifndef GEEZY_LATTICE_CHECK
-    overlay(); telemetry();
+    if(!synth.slow) {
+        GX_CopyTex(trail_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
+        trail_valid=1;
+    }
+    overlay(); if(synth.hud_visible) telemetry();
 #else
     (void)overlay; (void)telemetry;
 #endif
@@ -504,10 +771,11 @@ int main(void) {
     void *fb[2]={SYS_AllocateFramebuffer(mode),SYS_AllocateFramebuffer(mode)};
     void *fifo=memalign(32,256*1024);
     u32 history_size=GX_GetTexBufferSize(mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_FALSE,0);
-    history_pixels=memalign(32,history_size);
-    if(!fb[0]||!fb[1]||!fifo||!history_pixels) return 1;
+    history_pixels=memalign(32,history_size); trail_pixels=memalign(32,history_size);
+    if(!fb[0]||!fb[1]||!fifo||!history_pixels||!trail_pixels) return 1;
     fb[0]=MEM_K0_TO_K1(fb[0]); fb[1]=MEM_K0_TO_K1(fb[1]);
     memset(fifo,0,256*1024); memset(history_pixels,0,history_size); DCFlushRange(history_pixels,history_size);
+    memset(trail_pixels,0,history_size); DCFlushRange(trail_pixels,history_size);
     VIDEO_Configure(mode); VIDEO_SetNextFramebuffer(fb[0]);
     VIDEO_SetBlack(TRUE); VIDEO_Flush(); VIDEO_WaitVSync();
     if(mode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
@@ -531,6 +799,8 @@ int main(void) {
     GX_InitTexObjLOD(&grid_tex,GX_LIN_MIP_LIN,GX_LINEAR,0,6,0,GX_TRUE,GX_TRUE,GX_ANISO_4);
     GX_InitTexObj(&history,history_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&history,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
+    GX_InitTexObj(&trail_tex,trail_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
+    GX_InitTexObjLOD(&trail_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_SetTexCopySrc(0,0,mode->fbWidth,mode->efbHeight);
     GX_SetTexCopyDst(mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_FALSE);
     for(int y=0;y<8;y++) for(int x=0;x<8;x++) dither_pixels[y*8+x]=y%4==0?0:255;
@@ -549,7 +819,19 @@ int main(void) {
         u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
-#if defined(GEEZY_LATTICE_CHECK) || defined(GEEZY_CHECKER_CHECK)
+#if defined(GEEZY_SCULPTURE_CHECK)
+        unsigned stage=(check_frame/120)%36,beat=check_frame%120;
+        down=held=0;
+        if(beat==0) {
+            reset(&synth); check_sculpture=stage%9;
+            synth.skin=stage/9; synth.layout=stage%4; synth.backdrop=stage%4;
+            synth.gear=stage%4; synth.seed=7+stage*7919; make_metal();
+            if(stage%3==0) hit(&synth,1.5f);
+        }
+        if(stage%4==0 && beat>=30 && beat<110) held=WPAD_BUTTON_A;
+        if(stage%4==1 && beat>=60 && beat<90) held=WPAD_BUTTON_B;
+        if(beat==90) held|=WPAD_BUTTON_1|WPAD_BUTTON_PLUS;
+#elif defined(GEEZY_LATTICE_CHECK) || defined(GEEZY_CHECKER_CHECK) || defined(GEEZY_TRAIL_CHECK)
         down=held=0;
         if(check_frame==0) {
             reset(&synth); synth.gear=2; steer(&synth,1,1);
