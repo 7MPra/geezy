@@ -11,6 +11,7 @@ static inline int steering_buttons(unsigned held) { return (held&KEY_ARROWS) && 
 static inline void remix(Synth *s) {
     palette_next(s);
     uint32_t recipe=s->seed;
+    s->world_mode=(recipe>>3)%5;
     s->shape=(recipe>>1)%5; s->skin=(recipe>>5)&3; s->layout=(recipe>>8)&3;
     s->backdrop=(recipe>>12)&3; s->reflection=(recipe>>16)&3;
     s->beam_style=(recipe>>28)&3;
@@ -50,7 +51,10 @@ static inline int classic_controls(Synth *s,unsigned held,float x,float y) {
     if((held&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS)) { reset(s); s->classic_held=held; return 1; }
     if(down&CLASS_X) { if(held&CLASS_L) s->layout=(s->layout+1)%4; else if(held&CLASS_R) camera_cut(s); else { palette_next(s); dirty=1; } }
     if((down&CLASS_Y) && (held&(CLASS_L|CLASS_R))==(CLASS_L|CLASS_R)) { remix(s); dirty=1; }
-    else if(down&CLASS_Y) { if(held&CLASS_R) s->motion_mode=(s->motion_mode+1)%4; else next_scene(s); hit(s,1); }
+    else if(down&CLASS_Y) {
+        if(held&CLASS_L) s->world_mode=(s->world_mode+1)%5;
+        else { if(held&CLASS_R) s->motion_mode=(s->motion_mode+1)%4; else next_scene(s); hit(s,1); }
+    }
     if(down&CLASS_B) s->mask_pattern=(s->mask_pattern+1)%8;
     if(down&CLASS_ZL) { s->theme=(s->theme+1)%4; dirty=1; }
     if((down&CLASS_ZR) && !(held&CLASS_R)) { harmony_bank(s,(s->palette_bank+1)%16); dirty=1; }
@@ -92,6 +96,11 @@ static inline int controls(Synth *s,unsigned held) {
     if((held&(KEY_ONE|KEY_MINUS))==(KEY_ONE|KEY_MINUS)) {
         s->pending_taps&=~KEY_ONE; s->remix_pending=0;
         if(down&(KEY_ONE|KEY_MINUS)) { harmony_bank(s,(s->palette_bank+1)%16); return 1; }
+        return 0;
+    }
+    if((held&(KEY_TWO|KEY_MINUS))==(KEY_TWO|KEY_MINUS)) {
+        s->pending_taps&=~KEY_TWO; s->remix_pending=0;
+        if(down&(KEY_TWO|KEY_MINUS)) s->world_mode=(s->world_mode+1)%5;
         return 0;
     }
     unsigned mods=held&KEY_MODS,arrows=held&KEY_ARROWS;

@@ -32,6 +32,38 @@ int main(void) {
     midi_led_packet(packet,4,5,1); assert(packet[3]==5);
     midi_led_packet(packet,82,1,1); assert(packet[1]==0x90 && packet[2]==112 && packet[3]==1);
     Synth s; MidiInput input={0}; reset(&s);
+    midi_start(); assert(!midi_usb.stop && !midi_poll(&s,&input));
+    assert(s.world_mode==0);
+    for(int world=0;world<5;world++) {
+        int theme=s.theme,skin=s.skin,reflection=s.reflection;
+        midi_action(&s,&input,56+world,1);
+        assert(s.world_mode==world && s.theme==theme && s.skin==skin && s.reflection==reflection);
+        uint8_t lights[90]; midi_leds(&s,&input,lights);
+        for(int i=0;i<5;i++) assert(lights[56+i]==(i==world));
+        midi_action(&s,&input,56+world,0);
+    }
+    for(int cycle=0;cycle<4;cycle++) {
+        int theme=s.theme,skin=s.skin,reflection=s.reflection;
+        assert(midi_action(&s,&input,61,1)); midi_action(&s,&input,61,0);
+        midi_action(&s,&input,62,1); midi_action(&s,&input,62,0);
+        assert(midi_action(&s,&input,63,1)); midi_action(&s,&input,63,0);
+        assert(s.theme==(theme+1)%4 && s.skin==(skin+1)%4 && s.reflection==(reflection+1)%4 && s.world_mode==4);
+    }
+    for(int i=0;i<4;i++) {
+        midi_action(&s,&input,64+i,1); midi_action(&s,&input,64+i,0);
+        assert(s.theme==i && s.skin==0 && s.reflection==0 && s.world_mode==4);
+    }
+    reset(&s);
+    for(int i=1;i<=10;i++) {
+        controls(&s,KEY_TWO); controls(&s,KEY_TWO|KEY_MINUS); controls(&s,KEY_TWO|KEY_MINUS);
+        controls(&s,KEY_TWO); controls(&s,0);
+        assert(s.world_mode==i%5 && s.gear==1 && s.shape==0 && s.motion_mode==0 && s.seed==7);
+    }
+    for(int i=1;i<=10;i++) {
+        classic_controls(&s,CLASS_L,0,0); classic_controls(&s,CLASS_L|CLASS_Y,0,0);
+        classic_controls(&s,CLASS_L|CLASS_Y,0,0); classic_controls(&s,0,0,0);
+        assert(s.world_mode==i%5 && s.shape==0 && s.motion_mode==0 && s.seed==7);
+    }
     for(int n=0;n<90;n++) {
         int dirty=midi_action(&s,&input,n,1); (void)dirty;
         Synth before=s; assert(!midi_action(&s,&input,n,1)); assert(memcmp(&s,&before,sizeof(s))==0);
@@ -76,12 +108,13 @@ int main(void) {
     }
     classic_controls(&s,0,0,0); uint32_t old_seed=s.seed;
     assert(classic_controls(&s,CLASS_L|CLASS_R|CLASS_Y,0,0) && s.seed!=old_seed);
-    reset(&s); s.hud_visible=0; s.gear=3; unsigned themes=0,harmonies=0;
+    reset(&s); s.hud_visible=0; s.gear=3; unsigned themes=0,harmonies=0,worlds=0;
     for(int i=0;i<256;i++) {
         remix(&s); themes|=1u<<s.theme; harmonies|=1u<<s.harmony_mode;
+        worlds|=1u<<s.world_mode;
         assert(!s.hud_visible && s.gear==3 && s.bank_seed[s.palette_bank]==s.seed);
     }
-    assert(themes==15 && harmonies==15);
+    assert(themes==15 && harmonies==15 && worlds==31);
     palette_next(&s); assert(s.bank_seed[s.palette_bank]==s.seed);
     // Deterministic malformed descriptors and arbitrary USB packets must remain bounded.
     uint32_t random=7; uint8_t bytes[128];

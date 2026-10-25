@@ -16,7 +16,7 @@ typedef struct {
     unsigned palette_count, tick, sample_tick, shake_cooldown, stutter_tick, grid_tick;
     int focus_index, shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
     int skin, layout, backdrop, reflection, remix_pending, beam_style, hud_visible;
-    int theme, harmony_mode, palette_bank, mask_active;
+    int theme, harmony_mode, palette_bank, mask_active, world_mode;
     uint32_t bank_seed[16];
     float mask_clock, mask_release;
     unsigned classic_held;

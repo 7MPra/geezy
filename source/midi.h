@@ -65,7 +65,10 @@ static inline int midi_action(Synth *s,MidiInput *input,int note,int on) {
     if(note==80) { remix(s); return 1; }
     if(note==81) { s->hud_visible=!s->hud_visible; return 0; }
     if(note>=82 && note<=89) { s->mask_pattern=note-82; return 0; }
-    if(note>=56 && note<=63) { theme_preset(s,note-56); return 1; }
+    if(note>=56 && note<=60) { s->world_mode=note-56; return 0; }
+    if(note==61) { s->theme=(s->theme+1)%4; return 1; }
+    if(note==62) { s->skin=(s->skin+1)%4; return 0; }
+    if(note==63) { s->reflection=(s->reflection+1)%4; return 1; }
     if(note>=48 && note<=55) { space_preset(s,note-48); return 0; }
     if(note>=40 && note<=47) { object_preset(s,note-40); return 0; }
     if(note>=36 && note<=39) { s->gear=note-36; return 0; }
@@ -92,14 +95,13 @@ static inline int midi_steering(Synth *s,const MidiInput *input) {
 static inline void midi_leds(const Synth *s,const MidiInput *input,uint8_t leds[90]) {
     memset(leds,0,90);
     for(int i=0;i<8;i++) {
-        Synth p=*s; theme_preset(&p,i);
-        if(s->theme==p.theme && s->skin==p.skin && s->reflection==p.reflection) leds[56+i]=1;
-        p=*s; space_preset(&p,i); if(s->backdrop==p.backdrop && s->beam_style==p.beam_style) leds[48+i]=1;
+        Synth p=*s; space_preset(&p,i); if(s->backdrop==p.backdrop && s->beam_style==p.beam_style) leds[48+i]=1;
         p=*s; object_preset(&p,i); if(s->shape==p.shape && s->layout==p.layout) leds[40+i]=1;
     }
     leds[32+s->motion_mode]=leds[36+s->gear]=leds[16+s->palette_bank]=1;
     leds[64+s->theme]=leds[68+s->gear]=1;
     for(int n=0;n<90;n++) if(input->held[n]) leds[n]=(n==4||n==5)?5:3;
+    leds[56+s->world_mode]=1;
 }
 
 #ifdef HW_RVL
@@ -227,5 +229,9 @@ static int midi_poll(Synth *s,MidiInput *input) {
     u32 irq=IRQ_Disable(); memcpy(midi_usb.wanted,leds,90); IRQ_Restore(irq);
     return dirty;
 }
+#else
+static struct { int stop; } midi_usb;
+static inline void midi_start(void) { midi_usb.stop=0; }
+static inline int midi_poll(Synth *s,MidiInput *input) { (void)s; (void)input; return 0; }
 #endif
 #endif

@@ -133,6 +133,7 @@ static void normal_vertex(Vec p,Vec n,u8 shade) {
 // All 3D primitives share this guard: WIRE can never submit a filled face.
 static void begin_3d(u8 primitive,u16 count) {
     assert(surface_kind!=WIRE || primitive==GX_LINES || primitive==GX_LINESTRIP || primitive==GX_POINTS);
+    assert(synth.world_mode!=3 || primitive==GX_LINES || primitive==GX_LINESTRIP || primitive==GX_POINTS);
     GX_Begin(primitive,GX_VTXFMT0,count);
 }
 static void wire_points(const Vec *p,int count,u8 shade) {
@@ -655,6 +656,7 @@ static void mask_rect(float x,float y,float w,float h) {
     GX_End();
 }
 #include "overlay.h"
+#include "worlds.h"
 static void small_text(const char *text,float x,float y) {
     float dot=0.008f;
     for(int i=0;text[i];i++) for(int row=0;row<5;row++) for(int col=0;col<5;col++)
@@ -676,7 +678,7 @@ static void telemetry(void) {
     snprintf(text,sizeof(text),"FOV:%03.0f",synth.draw.fov); small_text(text,0.94f-strlen(text)*0.048f,0.94f);
     snprintf(text,sizeof(text),"SEED:%04X",(unsigned)(synth.seed&65535)); small_text(text,0.94f-strlen(text)*0.048f,0.84f);
     snprintf(text,sizeof(text),"S%d L%d M%d V%d",synth.shape,synth.layout,synth.skin,synth.motion_mode); small_text(text,-0.94f,0.74f);
-    snprintf(text,sizeof(text),"W%d P%02d X%d",synth.theme,synth.palette_bank,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
+    snprintf(text,sizeof(text),"WM%d W%d P%02d X%d",synth.world_mode,synth.theme,synth.palette_bank,synth.mask_pattern); small_text(text,0.94f-strlen(text)*0.048f,0.74f);
     if(synth.tension<=0.7f || (synth.tick/6)%2==0) {
         char bar[11]; for(int i=0;i<10;i++) bar[i]=i<(int)(synth.tension*10)?'|':' '; bar[10]=0;
         snprintf(text,sizeof(text),"TNS:[%s]",bar); small_text(text,-0.94f,-0.82f);
@@ -707,7 +709,9 @@ static void render(void) {
     synth.mask_pattern=6; synth.mask_env=1; overlay(); return;
 #endif
     static unsigned last_tick;
-    if(synth.tick<last_tick) trail_valid=0;
+    static int last_world;
+    if(synth.tick<last_tick || synth.world_mode!=last_world) trail_valid=0;
+    last_world=synth.world_mode;
     last_tick=synth.tick;
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     ortho(); material(NULL); tint=clear_color(); mask_rect(-1,-1,2,2);
@@ -717,18 +721,23 @@ static void render(void) {
         mask_rect(-1,-1,2,2);
         trail_valid=0; // A white strobe must not seed a persistent white trail after release.
     }
-    projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    if(synth.gear==3 || synth.backdrop==2) dome();
-    if(synth.backdrop==0 || synth.backdrop==2) swarm();
-    if(synth.backdrop==1) warp_tunnel();
-    if(synth.backdrop!=2) vector_tunnel();
+    if(synth.world_mode==0) {
+        projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
+        if(synth.gear==3 || synth.backdrop==2) dome();
+        if(synth.backdrop==0 || synth.backdrop==2) swarm();
+        if(synth.backdrop==1) warp_tunnel();
+        if(synth.backdrop!=2) vector_tunnel();
 #ifndef GEEZY_LATTICE_CHECK
-    feedback_trail();
-    projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-    mega();
+        feedback_trail();
+        projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
+        mega();
 #else
-    (void)mega; (void)feedback_trail;
+        (void)mega; (void)feedback_trail;
 #endif
+    } else {
+        if(synth.world_mode!=3) feedback_trail();
+        independent_world();
+    }
     GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
     if(synth.draw.burst>0.5f || synth.tension>0.3f) feedback_echo();
 #ifndef GEEZY_LATTICE_CHECK
@@ -737,6 +746,10 @@ static void render(void) {
         trail_valid=1;
     }
     overlay(); if(synth.hud_visible) telemetry();
+#ifdef GEEZY_WORLDS_CHECK
+    ortho(); material(NULL);
+    tint=(GXColor){32+synth.world_mode*32,32+synth.theme*48,17,255}; mask_rect(-1,-1,0.04f,0.04f);
+#endif
 #else
     (void)overlay; (void)telemetry;
 #endif
@@ -808,7 +821,20 @@ int main(void) {
         u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
-#if defined(GEEZY_GRAPHICS_CHECK)
+#if defined(GEEZY_WORLDS_CHECK)
+        unsigned stage=(check_frame/180)%20,beat=check_frame%180;
+        down=held=0;
+        if(beat==0) {
+            reset(&synth); memset(&midi_input,0,sizeof(midi_input));
+            midi_action(&synth,&midi_input,56+stage%5,1); midi_action(&synth,&midi_input,56+stage%5,0);
+            theme_preset(&synth,stage/5); synth.gear=2;
+            synth.layout=stage/5; synth.shape=stage/5; synth.backdrop=stage/5;
+            synth.motion_mode=stage/5; make_metal();
+        }
+        if(beat>=30 && beat<55) held=WPAD_BUTTON_DOWN;
+        if(beat>=60 && beat<125) held=WPAD_BUTTON_A;
+        if(beat>=145 && beat<170) { synth.mask_pattern=2+stage%2; held=WPAD_BUTTON_B; }
+#elif defined(GEEZY_GRAPHICS_CHECK)
         unsigned stage=(check_frame/120)%32,beat=check_frame%120;
         down=held=0;
         if(beat==0) {
