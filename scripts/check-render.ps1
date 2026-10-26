@@ -1,6 +1,7 @@
-param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[ValidateRange(0,3)][int]$Beams=0)
+param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[switch]$Profile,[ValidateRange(0,3)][int]$Beams=0)
 $ErrorActionPreference='Stop'
 if((@($Lattice,$Checker,$Sculptures,$Trail,$Graphics,$Stencil,$Worlds,$Gpu) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
+if($Profile -and ($Gpu -or $Stencil -or $Checker -or $Trail -or $Lattice)){throw 'Profile requires the complete render path'}
 Push-Location (Split-Path $PSScriptRoot -Parent)
 $process=$null
 try {
@@ -13,6 +14,7 @@ try {
     if($Gpu){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_GPU_CHECK')}
     if($Worlds){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_WORLDS_CHECK')}
     if($Stencil){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_STENCIL_CHECK')}
+    if($Profile){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_PROFILE')}
     docker run --rm --mount "type=bind,source=$pwd,target=/project" -w /project devkitpro/devkitppc:latest bash -lc $build
     if($LASTEXITCODE -ne 0){throw 'Visual check build failed'}
     New-Item -ItemType Directory -Force .dolphin-check/Config,artifacts | Out-Null
@@ -67,8 +69,9 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    $count=if($Gpu){20}elseif($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
+    $count=if($Gpu){30}elseif($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
     $prefix=if($Gpu){'gpu'}elseif($Worlds){'worlds'}elseif($Graphics){'graphics'}elseif($Stencil){'stencil'}elseif($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
+    if($Profile){$prefix="profile-$prefix"}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     for($i=0;$i -lt $count;$i++) {
         $r=New-Object GeezyCapture+Rect

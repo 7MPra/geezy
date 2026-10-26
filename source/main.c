@@ -10,6 +10,8 @@
 #include "chrome.h"
 #include "grid.h"
 #include "geometry.h"
+#include "render_plan.h"
+#include "profile.h"
 #include <assert.h>
 #include <stdio.h>
 
@@ -150,6 +152,13 @@ static void triangle(Vec a,Vec b,Vec c,u8 shade) {
     if(surface_kind==WIRE) wire_points(p,3,shade);
 }
 #include "gx_mesh.h"
+static void copy_texture(void *pixels) {
+    profile_copy();
+    GX_CopyTex(pixels,GX_FALSE); GX_PixModeSync();
+    // The GPU fence orders texture reads; only CPU readback needs GX_DrawDone here.
+    if(!gpu_stage2_enabled) GX_DrawDone();
+    GX_InvalidateTexAll();
+}
 static void box_vertices(const Vec p[8],u8 shade) {
     if(surface_kind==WIRE) {
         begin_3d(GX_LINES,24);
@@ -471,20 +480,25 @@ static void glyph_totem(Vec center,float size,float angle,Sculpture g) {
 }
 static void polyform(Vec center,float size,float angle,Sculpture g) {
     surface(CHROME);
-    for(int i=0;i<=32;i++) for(int j=0;j<=12;j++) {
-        float u=(i%32)*6.2831853f/32-3.14159265f,v=j*3.14159265f/12-1.5707963f;
-        float radius=super_radius(u,g.symmetry,g.sharpness)*super_radius(v,4,g.sharpness);
-        Vec n={cosf(v)*cosf(u),sinf(v),cosf(v)*sinf(u)};
-        mesh_pos[i][j]=scale_vec(n,2.8f*radius); mesh_normal[i][j]=n;
+    MeshList *cached=mesh_fast() && gpu_stage2_enabled?mesh_lookup((MeshKey){3,g.symmetry,0,surface_kind==WIRE,g.sharpness,0,0}):NULL;
+    if(cached && cached->bytes) cached_mesh_draw(cached,center,size,angle,angle*0.37f);
+    else {
+        for(int i=0;i<=32;i++) for(int j=0;j<=12;j++) {
+            float u=(i%32)*6.2831853f/32-3.14159265f,v=j*3.14159265f/12-1.5707963f;
+            float radius=super_radius(u,g.symmetry,g.sharpness)*super_radius(v,4,g.sharpness);
+            Vec n={cosf(v)*cosf(u),sinf(v),cosf(v)*sinf(u)};
+            mesh_pos[i][j]=scale_vec(n,2.8f*radius); mesh_normal[i][j]=n;
+        }
+        // Geometric neighbor normals keep chrome reflections attached to the changing lobes.
+        for(int i=0;i<32;i++) for(int j=1;j<12;j++) {
+            Vec du=add(mesh_pos[(i+1)%32][j],scale_vec(mesh_pos[(i+31)%32][j],-1));
+            Vec dv=add(mesh_pos[i][j+1],scale_vec(mesh_pos[i][j-1],-1));
+            mesh_normal[i][j]=unit(cross(dv,du));
+        }
+        for(int j=0;j<=12;j++) mesh_normal[32][j]=mesh_normal[0][j];
+        if(cached && compile_mesh(cached,32,12,0,0)) cached_mesh_draw(cached,center,size,angle,angle*0.37f);
+        else mesh(32,12,center,size,angle,angle*0.37f);
     }
-    // Geometric neighbor normals keep chrome reflections attached to the changing lobes.
-    for(int i=0;i<32;i++) for(int j=1;j<12;j++) {
-        Vec du=add(mesh_pos[(i+1)%32][j],scale_vec(mesh_pos[(i+31)%32][j],-1));
-        Vec dv=add(mesh_pos[i][j+1],scale_vec(mesh_pos[i][j-1],-1));
-        mesh_normal[i][j]=unit(cross(dv,du));
-    }
-    for(int j=0;j<=12;j++) mesh_normal[32][j]=mesh_normal[0][j];
-    mesh(32,12,center,size,angle,angle*0.37f);
     for(unsigned i=0;i<g.profile+2;i++) {
         Vec offset=rotate((Vec){(i%2?1:-1)*3.0f,1.4f-i*1.1f,0.5f},angle,angle*0.37f);
         octahedron(add(center,scale_vec(offset,size)),size*(0.5f+g.tube),-angle, i%2?MATTE:CHROME,0);
@@ -747,15 +761,19 @@ static void telemetry(void) {
         snprintf(text,sizeof(text),"TNS:[%s]",bar); small_text(text,-0.94f,-0.82f);
         snprintf(text,sizeof(text),"%03.0f%%",synth.tension*100); small_text(text,0.94f-strlen(text)*0.048f,-0.82f);
     }
+#ifdef GEEZY_PROFILE
+    tint=synth.theme==1||synth.theme==3?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
+    mask_rect(-0.97f,-0.75f,1.94f,0.42f); tint=ink;
+    float *ms=profile_stats.ms;
+    snprintf(text,sizeof(text),"HZ:%.1f CPU:%.1f WAIT:%.1f",profile_stats.interval_ms>0?1000/profile_stats.interval_ms:0,
+        ms[TIME_INPUT]+ms[TIME_SCENE]+ms[TIME_EFFECTS]+ms[TIME_UI],ms[TIME_WAIT]); small_text(text,-0.94f,-0.36f);
+    snprintf(text,sizeof(text),"IN:%.1f 3D:%.1f FX:%.1f UI:%.1f",ms[TIME_INPUT],ms[TIME_SCENE],ms[TIME_EFFECTS],ms[TIME_UI]);
+    small_text(text,-0.94f,-0.49f);
+    snprintf(text,sizeof(text),"WORK MAX:%.1f MS EFB:%.1f",profile_stats.peak_ms,profile_stats.copies); small_text(text,-0.94f,-0.62f);
+#endif
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
-#include "gpu_check.h"
-static void render(void) {
-    mesh_frame++;
-#ifdef GEEZY_GPU_CHECK
-    mesh_calls=mesh_builds=0;
-    gpu_check(); return;
-#endif
+static void render_scene(void) {
 #ifdef GEEZY_STENCIL_CHECK
     ortho(); material(NULL); tint=(GXColor){0,0,255,255}; mask_rect(-1,-1,2,2);
     tint=(GXColor){0,255,0,255}; mask_rect(wrap(synth.tick*0.01f,1.6f),-0.5f,0.1f,0.1f);
@@ -768,7 +786,7 @@ static void render(void) {
     if(synth.tick%240<120) {
         ortho(); material(NULL); mask_rect(-0.3f,-0.3f,0.6f,0.6f);
     }
-    GX_CopyTex(trail_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
+    copy_texture(trail_pixels);
     trail_valid=1; return;
 #endif
 #ifdef GEEZY_CHECKER_CHECK
@@ -807,13 +825,16 @@ static void render(void) {
         if(synth.world_mode!=3) feedback_trail();
         independent_world();
     }
-    GX_CopyTex(history_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
-    if(synth.draw.burst>0.5f || synth.tension>0.3f) feedback_echo();
+    profile_mark(TIME_SCENE);
+    RenderPlan plan=render_plan(&synth);
+    if(plan.history || !gpu_stage2_enabled) copy_texture(history_pixels);
+    if(plan.echo) feedback_echo();
 #ifndef GEEZY_LATTICE_CHECK
-    if(!synth.slow) {
-        GX_CopyTex(trail_pixels,GX_FALSE); GX_PixModeSync(); GX_DrawDone(); GX_InvalidateTexAll();
+    if(plan.trail || (!gpu_stage2_enabled && !synth.slow)) {
+        copy_texture(trail_pixels);
         trail_valid=1;
-    }
+    } else trail_valid=0;
+    profile_mark(TIME_EFFECTS);
     overlay(); if(synth.hud_visible) telemetry();
 #ifdef GEEZY_WORLDS_CHECK
     ortho(); material(NULL);
@@ -821,6 +842,15 @@ static void render(void) {
 #endif
 #else
     (void)overlay; (void)telemetry;
+#endif
+}
+#include "gpu_check.h"
+static void render(void) {
+    mesh_frame++;
+#ifdef GEEZY_GPU_CHECK
+    mesh_calls=mesh_builds=0; gpu_check();
+#else
+    render_scene();
 #endif
 }
 
@@ -888,7 +918,8 @@ int main(void) {
     unsigned check_frame=0;
 #endif
     while(!quitting&&SYS_MainLoop()) {
-        u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f; last=now;
+        u64 now=gettime(); float dt=ticks_to_microsecs(now-last)/1000000.0f;
+        profile_begin(now,ticks_to_microsecs(now-last)); last=now;
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
 #if defined(GEEZY_WORLDS_CHECK)
@@ -1007,10 +1038,11 @@ int main(void) {
             advance(&synth,dt,!!(keys&KEY_A)||!!(classic&CLASS_A)||midi_input.held[4],
                 steering_buttons(keys)||classic_boost||midi_boost,!!(keys&KEY_B)||!!(classic&CLASS_B)||midi_mask>=0);
         }
+        profile_mark(TIME_INPUT);
         GX_SetColorUpdate(GX_TRUE); GX_InvalidateTexAll(); render();
-        GX_DrawDone();
+        profile_mark(TIME_UI);
         GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE); GX_SetColorUpdate(GX_TRUE);
-        GX_CopyDisp(fb[frame],GX_TRUE); GX_Flush();
+        GX_CopyDisp(fb[frame],GX_TRUE); GX_DrawDone(); profile_end();
         VIDEO_SetNextFramebuffer(fb[frame]); VIDEO_Flush(); VIDEO_WaitVSync(); frame^=1;
     }
     midi_usb.stop=1;

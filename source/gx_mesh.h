@@ -9,6 +9,7 @@ static MeshList mesh_slots[MESH_LISTS];
 static u8 cube_lists[2][2048] ATTRIBUTE_ALIGN(32);
 static u32 cube_bytes[2],mesh_frame;
 static int gpu_mesh_enabled=1;
+static int gpu_stage2_enabled=1;
 #ifdef GEEZY_GPU_CHECK
 static unsigned mesh_calls,mesh_builds;
 #endif
