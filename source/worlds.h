@@ -179,32 +179,52 @@ static void brutalist_world(void) {
     GX_SetCullMode(GX_CULL_NONE);
 }
 static Vec cloud_vertices[CLOUD_POINTS];
+static u16 cloud_edges[CLOUD_POINTS*6],cloud_row_end[16];
+static u8 cloud_point_shade[CLOUD_POINTS],cloud_line_shade[CLOUD_POINTS];
+static void cloud_update(void) {
+    static Pose previous;
+    static uint32_t seed;
+    static int shape=-1,layout=-1;
+    static float amount=-1;
+    float next_amount=crystal_amount(&synth);
+    if(gpu_mesh_enabled && seed==synth.seed && shape==synth.shape && layout==synth.layout && amount==next_amount &&
+       memcmp(&previous,&synth.draw,sizeof(previous))==0) return;
+    previous=synth.draw; seed=synth.seed; shape=synth.shape; layout=synth.layout; amount=next_amount;
+    Vec cells[125]; int count=cloud_glyph_cells(cells,synth.shape);
+    for(int i=0;i<CLOUD_POINTS;i++) {
+        Vec p=cloud_vertices[i]=cloud_position(i,&synth,cells,count);
+        float fade=cloud_fade(p); cloud_point_shade[i]=(u8)(fade*255); cloud_line_shade[i]=(u8)(fade*150);
+    }
+    int n=0;
+    for(int row=0;row<16;row++) {
+        for(int i=row*144;i<(row+1)*144;i++) for(int k=0;k<3;k++) {
+            int j=i+(int[]){1,12,144}[k]; if(j>=CLOUD_POINTS) continue;
+            Vec d=add(cloud_vertices[j],scale_vec(cloud_vertices[i],-1));
+            float length=d.x*d.x+d.y*d.y+d.z*d.z;
+            if(length>0.05f && length<125) { cloud_edges[n++]=i; cloud_edges[n++]=j; }
+        }
+        cloud_row_end[row]=n;
+    }
+}
 static void cloud_ink(int i) {
     if(synth.slow) return;
     tint=(i%4==3)?(GXColor){255,255,255,255}:gx_color(palette_role(i%4));
 }
 static void quantum_world(void) {
-    Vec cells[125]; int count=cloud_glyph_cells(cells,synth.shape);
-    for(int i=0;i<CLOUD_POINTS;i++) cloud_vertices[i]=cloud_position(i,&synth,cells,count);
+    cloud_update();
     world_surface(WIRE,2);
     // Bounded local-neighbor search: no all-pairs work on the Wii CPU.
     GX_SetLineWidth(6,GX_TO_ZERO);
     for(int row=0;row<16;row++) {
-        Vec lines[144*6]; int n=0;
-        for(int i=row*144;i<(row+1)*144;i++) for(int k=0;k<3;k++) {
-            int j=i+(int[]){1,12,144}[k]; if(j>=CLOUD_POINTS) continue;
-            Vec d=add(cloud_vertices[j],scale_vec(cloud_vertices[i],-1));
-            float length=d.x*d.x+d.y*d.y+d.z*d.z;
-            if(length>0.05f && length<125) { lines[n++]=cloud_vertices[i]; lines[n++]=cloud_vertices[j]; }
-        }
-        cloud_ink(row); begin_3d(GX_LINES,n);
-        for(int i=0;i<n;i++) vertex(lines[i],0,0,(u8)(cloud_fade(lines[i])*150),255);
+        int start=row?cloud_row_end[row-1]:0,end=cloud_row_end[row];
+        cloud_ink(row); begin_3d(GX_LINES,end-start);
+        for(int i=start;i<end;i++) { int v=cloud_edges[i]; vertex(cloud_vertices[v],0,0,cloud_line_shade[v],255); }
         GX_End();
     }
     for(int group=0;group<4;group++) {
         cloud_ink(group); GX_SetPointSize(12+group*6+(u8)(synth.tension*12),GX_TO_ZERO);
         begin_3d(GX_POINTS,CLOUD_POINTS/4);
-        for(int i=group;i<CLOUD_POINTS;i+=4) vertex(cloud_vertices[i],0,0,(u8)(cloud_fade(cloud_vertices[i])*255),255);
+        for(int i=group;i<CLOUD_POINTS;i+=4) vertex(cloud_vertices[i],0,0,cloud_point_shade[i],255);
         GX_End();
     }
 }

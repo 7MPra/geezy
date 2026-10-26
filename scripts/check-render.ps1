@@ -1,6 +1,6 @@
-param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[ValidateRange(0,3)][int]$Beams=0)
+param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[ValidateRange(0,3)][int]$Beams=0)
 $ErrorActionPreference='Stop'
-if((@($Lattice,$Checker,$Sculptures,$Trail,$Graphics,$Stencil,$Worlds) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
+if((@($Lattice,$Checker,$Sculptures,$Trail,$Graphics,$Stencil,$Worlds,$Gpu) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
 Push-Location (Split-Path $PSScriptRoot -Parent)
 $process=$null
 try {
@@ -10,12 +10,14 @@ try {
     if($Sculptures){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_SCULPTURE_CHECK')}
     if($Trail){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_TRAIL_CHECK')}
     if($Graphics){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_GRAPHICS_CHECK')}
+    if($Gpu){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_GPU_CHECK')}
     if($Worlds){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_WORLDS_CHECK')}
     if($Stencil){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_STENCIL_CHECK')}
     docker run --rm --mount "type=bind,source=$pwd,target=/project" -w /project devkitpro/devkitppc:latest bash -lc $build
     if($LASTEXITCODE -ne 0){throw 'Visual check build failed'}
     New-Item -ItemType Directory -Force .dolphin-check/Config,artifacts | Out-Null
     "[Settings]`nAspectRatio = 3" | Set-Content .dolphin-check/Config/GFX.ini
+    if($Gpu){Add-Content .dolphin-check/Config/GFX.ini "[Hacks]`nEFBToTextureEnable = False`nDeferEFBCopies = False"}
     "[Interface]`nConfirmStop = False" | Set-Content .dolphin-check/Config/Dolphin.ini
     Add-Type @"
 using System;
@@ -65,8 +67,8 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    $count=if($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
-    $prefix=if($Worlds){'worlds'}elseif($Graphics){'graphics'}elseif($Stencil){'stencil'}elseif($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
+    $count=if($Gpu){20}elseif($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
+    $prefix=if($Gpu){'gpu'}elseif($Worlds){'worlds'}elseif($Graphics){'graphics'}elseif($Stencil){'stencil'}elseif($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     for($i=0;$i -lt $count;$i++) {
         $r=New-Object GeezyCapture+Rect
@@ -87,14 +89,15 @@ public static int NeonPixels(byte[] pixels) {
         $white=[GeezyCapture]::WhitePixels($bytes)
         $neon=[GeezyCapture]::NeonPixels($bytes)
         $mixed=$bytes.Length/4-$black-$white-$neon
-        $results+=[pscustomobject]@{world=[int][Math]::Round(($bitmap.GetPixel(4,$bitmap.Height-4).R-32)/32.0);theme=[int][Math]::Round(($bitmap.GetPixel(4,$bitmap.Height-4).G-32)/48.0);frame=$i;seconds=$timer.Elapsed.TotalSeconds;pixels=$bytes.Length/4;blackPixels=$black;whitePixels=$white;neonPixels=$neon;mixedPixels=$mixed;centerBlue=($bitmap.GetPixel([int]($bitmap.Width/2),[int]($bitmap.Height/2)).B -eq 255 -and $bitmap.GetPixel([int]($bitmap.Width/2),[int]($bitmap.Height/2)).R -eq 0);cornerBlue=($bitmap.GetPixel(5,5).B -eq 255 -and $bitmap.GetPixel(5,5).R -eq 0);hash=(Get-FileHash $file).Hash;file=$file}
+        $results+=[pscustomobject]@{gpuPass=($bitmap.GetPixel(4,$bitmap.Height-4).G -eq 255 -and $bitmap.GetPixel(4,$bitmap.Height-4).R -eq 0);world=[int][Math]::Round(($bitmap.GetPixel(4,$bitmap.Height-4).R-32)/32.0);theme=[int][Math]::Round(($bitmap.GetPixel(4,$bitmap.Height-4).G-32)/48.0);frame=$i;seconds=$timer.Elapsed.TotalSeconds;pixels=$bytes.Length/4;blackPixels=$black;whitePixels=$white;neonPixels=$neon;mixedPixels=$mixed;centerBlue=($bitmap.GetPixel([int]($bitmap.Width/2),[int]($bitmap.Height/2)).B -eq 255 -and $bitmap.GetPixel([int]($bitmap.Width/2),[int]($bitmap.Height/2)).R -eq 0);cornerBlue=($bitmap.GetPixel(5,5).B -eq 255 -and $bitmap.GetPixel(5,5).R -eq 0);hash=(Get-FileHash $file).Hash;file=$file}
         $captureGraphics.Dispose();$bitmap.Dispose()
         Start-Sleep -Milliseconds $(if($Sculptures -or $Graphics -or $Worlds){500}elseif($Trail){10}elseif($Lattice -or $Checker -or $Stencil){100}else{1000})
     }
     $results | ConvertTo-Json | Set-Content "artifacts/$prefix-check.json"
     $results | Format-Table frame,blackPixels,whitePixels,neonPixels,mixedPixels
     # RGB channel displacement is inspected alongside the black/white/neon frame checks.
-    if(!$Lattice -and !$Checker -and !$Trail -and !$Stencil -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
+    if(!$Gpu -and !$Lattice -and !$Checker -and !$Trail -and !$Stencil -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
+    if($Gpu -and !$results[-1].gpuPass){throw 'GPU reference comparison failed or did not finish'}
     if($Worlds) {
         $seen=@($results | Group-Object world,theme)
         if($seen.Count -ne 20){throw 'Not all 5 worlds x 4 themes were captured'}
@@ -107,7 +110,7 @@ public static int NeonPixels(byte[] pixels) {
         if(!($results | Where-Object { $_.whitePixels -gt 1000 })){throw 'Trail source was not rendered'}
         if(!($results | Where-Object { $_.whitePixels -eq 0 -and $_.mixedPixels -gt 1000 })){throw 'Recursive trail was not rendered'}
     }
-    if(!$Trail -and ($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
+    if(!$Gpu -and !$Trail -and ($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
     if($Stencil) {
         foreach($frame in $results) {
             if(!$frame.centerBlue -or $frame.cornerBlue){throw 'Z-buffer window did not preserve the center and cover the outside'}

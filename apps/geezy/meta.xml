@@ -2,7 +2,7 @@
 <app version="1">
   <name>Geezy</name>
   <coder>Geezy</coder>
-  <version>0.14.1</version>
+  <version>0.15.0</version>
   <short_description>3D video synthesizer</short_description>
   <long_description>Wii VJ synth. Sideways remote, Classic Controller and class-compliant USB-MIDI Note buttons. APC mini/MK2 top row: worlds 0-4, theme/skin/reflection cycles; other rows: backgrounds, sculpture presets, motion/gears, 16 harmony banks, 8 momentary graphics, steer/charge/hit/remix/HUD. MIDI CC ignored. Classic: stick steer, A charge, B graphics, X palette, Y scene, ZL theme, ZR harmony, Plus/Minus gear. Remote: A charge/strobe/release; B graphics; 1/2 palette/scene; arrows impulse/boost. 1+Plus HUD, 2+Plus theme, 1+Minus harmony bank. 2+Minus or Classic L+Y cycles worlds: orbit, horizon canyon, brutalist interior, point-cloud plexus, orthographic slicer. Four-color chrome, white/fog/halftone worlds, layered graphics and Z-buffer stencil windows. Plus+Minus reset; HOME exit. No sensor bar required.</long_description>
 </app>

@@ -149,6 +149,7 @@ static void triangle(Vec a,Vec b,Vec c,u8 shade) {
     GX_End();
     if(surface_kind==WIRE) wire_points(p,3,shade);
 }
+#include "gx_mesh.h"
 static void box_vertices(const Vec p[8],u8 shade) {
     if(surface_kind==WIRE) {
         begin_3d(GX_LINES,24);
@@ -172,6 +173,10 @@ static void box_vertices(const Vec p[8],u8 shade) {
     }
 }
 static void box(Vec center,Vec size,float angle,u8 shade) {
+    if(mesh_fast() && cube_bytes[surface_kind==WIRE] && size.x>0 && size.y>0 && size.z>0) {
+        Mtx model,rotation; rigid_matrix(center,size,angle,angle*0.37f,model,rotation);
+        list_draw(cube_lists[surface_kind==WIRE],cube_bytes[surface_kind==WIRE],model,rotation,1,shade); return;
+    }
     Vec p[8];
     for(int i=0;i<8;i++) p[i]=add(center,rotate((Vec){i&1?size.x:-size.x,i&2?size.y:-size.y,i&4?size.z:-size.z},angle,angle*0.37f));
     box_vertices(p,shade);
@@ -180,6 +185,13 @@ static void beam(Vec a,Vec b,float width,u8 shade) {
     Vec axis=unit(add(b,scale_vec(a,-1)));
     Vec side=scale_vec(unit(cross(axis,fabsf(axis.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0})),width);
     Vec up=scale_vec(unit(cross(axis,side)),width),p[8];
+    if(mesh_fast() && cube_bytes[surface_kind==WIRE] && width>0 && (a.x!=b.x || a.y!=b.y || a.z!=b.z)) {
+        Vec half=scale_vec(add(b,scale_vec(a,-1)),0.5f),center=scale_vec(add(a,b),0.5f);
+        Mtx model={{side.x,up.x,half.x,center.x},{side.y,up.y,half.y,center.y},{side.z,up.z,half.z,center.z}};
+        Vec sx=unit(side),sy=unit(up);
+        Mtx rotation={{sx.x,sy.x,axis.x,0},{sx.y,sy.y,axis.y,0},{sx.z,sy.z,axis.z,0}};
+        list_draw(cube_lists[surface_kind==WIRE],cube_bytes[surface_kind==WIRE],model,rotation,1,shade); return;
+    }
     for(int i=0;i<8;i++) p[i]=add(i&4?b:a,add(scale_vec(side,i&1?1:-1),scale_vec(up,i&2?1:-1)));
     box_vertices(p,shade);
 }
@@ -245,6 +257,51 @@ static void projection(void) {
     guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
 }
 static Vec mesh_pos[97][13],mesh_normal[97][13];
+static int compile_mesh(MeshList *slot,int rows,int cols,float cap_radius,float arc) {
+    u8 *data=mesh_lists[slot-mesh_slots]; int wire=slot->key.wire;
+    list_format(); DCInvalidateRange(data,MESH_LIST_BYTES); GX_BeginDispList(data,MESH_LIST_BYTES);
+    if(wire) {
+        for(int i=0;i<=rows;i+=2) {
+            GX_Begin(GX_LINESTRIP,GX_VTXFMT1,cols+1);
+            for(int j=0;j<=cols;j++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],0,0);
+            GX_End();
+        }
+        for(int j=0;j<cols;j++) {
+            GX_Begin(GX_LINESTRIP,GX_VTXFMT1,rows+1);
+            for(int i=0;i<=rows;i++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],0,0);
+            GX_End();
+        }
+        for(int i=0;i<rows;i+=4) {
+            GX_Begin(GX_POINTS,GX_VTXFMT1,cols);
+            for(int j=0;j<cols;j++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],0,0);
+            GX_End();
+        }
+    } else for(int i=0;i<rows;i++) {
+        GX_Begin(GX_TRIANGLESTRIP,GX_VTXFMT1,2*(cols+1));
+        for(int j=0;j<=cols;j++) for(int k=0;k<2;k++) list_vertex(mesh_pos[i+k][j],mesh_normal[i+k][j],0,0);
+        GX_End();
+    }
+    if(cap_radius>0 && arc<6.28f) for(int end=0;end<2;end++) {
+        Vec cap={cap_radius*cosf(end?arc:0),cap_radius*sinf(end?arc:0),0};
+        for(int j=0;j<cols;j++) {
+            Vec a=mesh_pos[end?rows:0][j],b=mesh_pos[end?rows:0][j+1];
+            Vec n=unit(cross(add(a,scale_vec(cap,-1)),add(b,scale_vec(cap,-1))));
+            GX_Begin(wire?GX_LINESTRIP:GX_TRIANGLES,GX_VTXFMT1,wire?4:3);
+            list_vertex(cap,n,0,0); list_vertex(a,n,0,0); list_vertex(b,n,0,0);
+            if(wire) list_vertex(cap,n,0,0);
+            GX_End();
+            if(wire) {
+                GX_Begin(GX_POINTS,GX_VTXFMT1,3);
+                list_vertex(cap,n,0,0); list_vertex(a,n,0,0); list_vertex(b,n,0,0); GX_End();
+            }
+        }
+    }
+    slot->bytes=GX_EndDispList(); immediate_format();
+#ifdef GEEZY_GPU_CHECK
+    mesh_builds++;
+#endif
+    return slot->bytes!=0;
+}
 static void mesh(int rows,int cols,Vec center,float size,float a,float b) {
     for(int i=0;i<=rows;i++) for(int j=0;j<=cols;j++) {
         mesh_pos[i][j]=add(center,scale_vec(rotate(mesh_pos[i][j],a,b),size));
@@ -270,11 +327,14 @@ static void mesh(int rows,int cols,Vec center,float size,float a,float b) {
 }
 static void ring(Vec center,float radius,float tube,float a,float b,int sides,float arc) {
     surface(CHROME);
+    MeshList *cached=mesh_fast()?mesh_lookup((MeshKey){1,sides,0,surface_kind==WIRE,radius,tube,arc}):NULL;
+    if(cached && cached->bytes) { cached_mesh_draw(cached,center,1,a,b); return; }
     for(int i=0;i<=32;i++) for(int j=0;j<=sides;j++) {
         float u=i*arc/32,v=j*6.2831853f/sides;
         mesh_normal[i][j]=(Vec){cosf(u)*cosf(v),sinf(u)*cosf(v),sinf(v)};
         mesh_pos[i][j]=(Vec){(radius+tube*cosf(v))*cosf(u),(radius+tube*cosf(v))*sinf(u),tube*sinf(v)};
     }
+    if(cached && compile_mesh(cached,32,sides,radius,arc)) { cached_mesh_draw(cached,center,1,a,b); return; }
     mesh(32,sides,center,1,a,b);
     if(arc<6.28f) for(int end=0;end<2;end++) {
         float u=end?arc:0;
@@ -344,6 +404,8 @@ static void frame_cluster(Vec center,float angle,float scale) {
 }
 static void knot(Vec center,float size,float angle,Sculpture g) {
     surface(CHROME);
+    MeshList *cached=mesh_fast()?mesh_lookup((MeshKey){2,g.p,g.q,surface_kind==WIRE,g.tube,0,0}):NULL;
+    if(cached && cached->bytes) { cached_mesh_draw(cached,center,size,angle,angle*0.43f); return; }
     for(int i=0;i<=96;i++) {
         float t=(i%96)*6.2831853f/96;
         Vec c=knot_center(t,g.p,g.q),normal,side; knot_frame(t,g.p,g.q,&normal,&side);
@@ -353,6 +415,7 @@ static void knot(Vec center,float size,float angle,Sculpture g) {
             mesh_pos[i][j]=add(c,scale_vec(mesh_normal[i][j],g.tube));
         }
     }
+    if(cached && compile_mesh(cached,96,8,0,0)) { cached_mesh_draw(cached,center,size,angle,angle*0.43f); return; }
     mesh(96,8,center,size,angle,angle*0.43f);
 }
 static void polygon_slab(Vec center,float radius,float height,float angle,int sides) {
@@ -686,7 +749,13 @@ static void telemetry(void) {
     }
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
+#include "gpu_check.h"
 static void render(void) {
+    mesh_frame++;
+#ifdef GEEZY_GPU_CHECK
+    mesh_calls=mesh_builds=0;
+    gpu_check(); return;
+#endif
 #ifdef GEEZY_STENCIL_CHECK
     ortho(); material(NULL); tint=(GXColor){0,0,255,255}; mask_rect(-1,-1,2,2);
     tint=(GXColor){0,255,0,255}; mask_rect(wrap(synth.tick*0.01f,1.6f),-0.5f,0.1f,0.1f);
@@ -785,6 +854,7 @@ int main(void) {
     GX_SetVtxAttrFmt(GX_VTXFMT0,GX_VA_TEX0,GX_TEX_ST,GX_F32,0);
     GX_SetNumChans(1); GX_SetNumTevStages(1);
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
+    mesh_init();
     GX_InitTexObj(&chrome_tex,chrome_pixels,128,128,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&chrome_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     for(int role=0;role<3;role++) {
