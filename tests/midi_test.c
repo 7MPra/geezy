@@ -93,7 +93,8 @@ int main(void) {
     classic_controls(&s,0,0,0); classic_controls(&s,0,1,0); assert(s.velocity.x>velocity);
     classic_controls(&s,CLASS_L|CLASS_X,0,0); assert(s.layout==1 && s.seed==7);
     classic_controls(&s,0,0,0); classic_controls(&s,CLASS_ZL,0,0); assert(s.theme==1);
-    classic_controls(&s,0,0,0); classic_controls(&s,CLASS_ZR,0,0); assert(s.palette_bank==1);
+    classic_controls(&s,0,0,0); classic_controls(&s,CLASS_ZR,0,0); assert(s.palette_bank==0);
+    classic_controls(&s,0,0,0); assert(s.palette_bank==1);
     classic_controls(&s,0,0,0); classic_controls(&s,CLASS_R|CLASS_X,0,0);
     assert(near(s.live.azimuth,s.target_azimuth));
     controls(&s,KEY_TWO|KEY_PLUS); controls(&s,0); assert(s.theme==2 && s.gear==1 && s.shape==0);

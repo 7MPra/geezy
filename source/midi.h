@@ -64,7 +64,7 @@ static inline int midi_action(Synth *s,MidiInput *input,int note,int on) {
     if(note>=76 && note<80) { space_preset(s,note-76); return 0; }
     if(note==80) { remix(s); return 1; }
     if(note==81) { s->hud_visible=!s->hud_visible; return 0; }
-    if(note>=82 && note<=89) { s->mask_pattern=note-82; return 0; }
+    if(note>=82 && note<=89) return 0;
     if(note>=56 && note<=60) { s->world_mode=note-56; return 0; }
     if(note==61) { s->theme=(s->theme+1)%4; return 1; }
     if(note==62) { s->skin=(s->skin+1)%4; return 0; }
@@ -83,10 +83,14 @@ static inline int midi_action(Synth *s,MidiInput *input,int note,int on) {
 }
 static inline int midi_overlay(const MidiInput *input) {
     unsigned latest=0; int pattern=-1;
-    for(int n=0;n<128;n++) if(input->held[n] && ((n>=8 && n<=15)||(n>=82 && n<=89)) && input->order[n]>latest) {
-        latest=input->order[n]; pattern=n>=82?n-82:n-8;
+    for(int n=8;n<=15;n++) if(input->held[n] && input->order[n]>latest) {
+        latest=input->order[n]; pattern=n-8;
     }
     return pattern;
+}
+static inline unsigned midi_master_fx(const MidiInput *input) {
+    unsigned fx=0; for(int i=0;i<8;i++) if(input->held[82+i]) fx|=1u<<i;
+    return fx;
 }
 static inline int midi_steering(Synth *s,const MidiInput *input) {
     int x=input->held[3]-input->held[0],y=input->held[2]-input->held[1];
@@ -101,6 +105,7 @@ static inline void midi_leds(const Synth *s,const MidiInput *input,uint8_t leds[
     leds[32+s->motion_mode]=leds[36+s->gear]=leds[16+s->palette_bank]=1;
     leds[64+s->theme]=leds[68+s->gear]=1;
     for(int n=0;n<90;n++) if(input->held[n]) leds[n]=(n==4||n==5)?5:3;
+    for(int n=82;n<=89;n++) leds[n]=input->held[n]?1:0;
     leds[56+s->world_mode]=1;
 }
 

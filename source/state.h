@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stdint.h>
 typedef struct { float x,y,z; } Vec;
+enum { FX_BLACKOUT=1,FX_WHITEOUT=2,FX_FREEZE=4,FX_MIRROR_X=8,FX_KALEIDO_4=16,
+       FX_INVERT=32,FX_MOSAIC=64,FX_STROBE_KILL=128 };
 typedef struct {
     Vec world_cam, look_at, objects[3], travel, tunnel_axis;
     float phase, roll, aim_x, aim_y, fov, burst, uv_shift, azimuth, elevation, radius, tunnel_distance;
@@ -20,6 +22,8 @@ typedef struct {
     uint32_t bank_seed[16];
     float mask_clock, mask_release;
     unsigned classic_held;
+    unsigned master_fx,remote_fx_latch,classic_fx_latch;
+    int classic_zr_pending;
     unsigned held_buttons, pending_taps;
     uint32_t seed;
 } Synth;
@@ -109,6 +113,10 @@ static inline float lattice_fade(Vec p,Vec eye) {
 static inline void sample_pose(Synth *s) {
     s->live.radius=dolly_radius(s->live.fov);
     s->draw=s->live; s->sample_tick=0;
+}
+static inline void set_master_fx(Synth *s,unsigned fx) {
+    if((s->master_fx&FX_FREEZE) && !(fx&FX_FREEZE)) sample_pose(s);
+    s->master_fx=fx;
 }
 static inline void reset(Synth *s) {
     *s=(Synth){.seed=7,.flow={0,0,-1},.live={.fov=80,.tunnel_axis={0,0,-1}},.target_fov=80,.shake_ready=1,.gear=1,.boost=1,.grid_axis=2,.focus_index=3,.hud_visible=1};
@@ -239,6 +247,7 @@ static inline void update_rig(Synth *s) {
     s->live.radius=dolly_radius(s->live.fov);
 }
 static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
+    if(s->master_fx&FX_FREEZE) return;
     s->accumulator+=fmaxf(0,fminf(dt,0.25f));
     if(slow && !s->slow) {
         s->stutter_anchor=s->draw; s->stutter_flow=s->flow; s->stutter_tick=0;

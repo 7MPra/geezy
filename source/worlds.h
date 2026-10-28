@@ -54,6 +54,9 @@ static void horizon_world(void) {
         float px=world_cell(x,cam.x,8),pz=world_cell(z,cam.z,8);
         float height=2+(h%7)*2.5f,sign=layer?-1:1;
         float base=sign*(-23),top=base+sign*height;
+        // Includes the foundation, pipe width and the maximum vertex-snap displacement.
+        Vec bounds={px,base+sign*(height-1.7f)*0.5f,pz};
+        if(gpu_stage3_enabled && box_behind_view(bounds,(Vec){4.34f,(height+4.3f)*0.5f+0.34f,4.34f},view[2])) continue;
         u8 shade=255;
         world_surface(GRID,(h>>8)%3);
         box((Vec){px,base-sign*1.5f,pz},(Vec){4,1.5f,4},0,shade);
@@ -212,19 +215,28 @@ static void cloud_ink(int i) {
 }
 static void quantum_world(void) {
     cloud_update();
+    u8 visible[CLOUD_POINTS];
+    // One-unit margin includes any snap rounding; retain lines that cross the view plane.
+    for(int i=0;i<CLOUD_POINTS;i++) visible[i]=!gpu_stage3_enabled || view_depth(cloud_vertices[i],view[2])<=1;
     world_surface(WIRE,2);
     // Bounded local-neighbor search: no all-pairs work on the Wii CPU.
     GX_SetLineWidth(6,GX_TO_ZERO);
     for(int row=0;row<16;row++) {
         int start=row?cloud_row_end[row-1]:0,end=cloud_row_end[row];
-        cloud_ink(row); begin_3d(GX_LINES,end-start);
-        for(int i=start;i<end;i++) { int v=cloud_edges[i]; vertex(cloud_vertices[v],0,0,cloud_line_shade[v],255); }
+        int count=0;
+        for(int i=start;i<end;i+=2) if(visible[cloud_edges[i]] || visible[cloud_edges[i+1]]) count+=2;
+        if(!count) continue;
+        cloud_ink(row); begin_3d(GX_LINES,count);
+        for(int i=start;i<end;i+=2) if(visible[cloud_edges[i]] || visible[cloud_edges[i+1]])
+            for(int j=0;j<2;j++) { int v=cloud_edges[i+j]; vertex(cloud_vertices[v],0,0,cloud_line_shade[v],255); }
         GX_End();
     }
     for(int group=0;group<4;group++) {
         cloud_ink(group); GX_SetPointSize(12+group*6+(u8)(synth.tension*12),GX_TO_ZERO);
-        begin_3d(GX_POINTS,CLOUD_POINTS/4);
-        for(int i=group;i<CLOUD_POINTS;i+=4) vertex(cloud_vertices[i],0,0,cloud_point_shade[i],255);
+        int count=0; for(int i=group;i<CLOUD_POINTS;i+=4) count+=visible[i];
+        if(!count) continue;
+        begin_3d(GX_POINTS,count);
+        for(int i=group;i<CLOUD_POINTS;i+=4) if(visible[i]) vertex(cloud_vertices[i],0,0,cloud_point_shade[i],255);
         GX_End();
     }
 }

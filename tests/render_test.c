@@ -6,14 +6,14 @@ int main(void) {
     for(int slow=0;slow<2;slow++) for(int pattern=0;pattern<8;pattern++) {
         s.theme=theme; s.world_mode=world; s.slow=slow; s.mask_pattern=pattern;
         s.draw.burst=s.tension=s.mask_env=0;
-        RenderPlan p=render_plan(&s);
+        RenderPlan p=render_plan(&s,0);
         assert(!p.echo && !p.history);
         assert(p.trail==(!slow && theme==0 && world!=3));
-        s.mask_env=0.002f; p=render_plan(&s); assert(p.history==(pattern==4));
-        s.mask_env=0.001f; p=render_plan(&s); assert(!p.history);
-        s.draw.burst=0.5f; s.tension=0.3f; p=render_plan(&s); assert(!p.echo);
-        s.draw.burst=0.501f; p=render_plan(&s); assert(p.echo && p.history);
-        s.draw.burst=0; s.tension=0.301f; p=render_plan(&s); assert(p.echo && p.history);
+        s.mask_env=0.002f; p=render_plan(&s,0); assert(p.history==(pattern==4));
+        s.mask_env=0.001f; p=render_plan(&s,0); assert(!p.history);
+        s.draw.burst=0.5f; s.tension=0.3f; p=render_plan(&s,0); assert(!p.echo);
+        s.draw.burst=0.501f; p=render_plan(&s,0); assert(p.echo && p.history);
+        s.draw.burst=0; s.tension=0.301f; p=render_plan(&s,0); assert(p.echo && p.history);
     }
     RenderStats stats={0};
     for(int i=0;i<60;i++) {

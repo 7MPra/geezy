@@ -12,6 +12,15 @@ static inline Vec unit(Vec p) {
     return len>0.00001f?scale_vec(p,1/len):(Vec){0,1,0};
 }
 static inline Vec cross(Vec a,Vec b) { return (Vec){a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; }
+static inline float view_depth(Vec p,const float row[4]) { return row[0]*p.x+row[1]*p.y+row[2]*p.z+row[3]; }
+static inline int box_behind_view(Vec center,Vec half,const float row[4]) {
+    float reach=fabsf(row[0])*half.x+fabsf(row[1])*half.y+fabsf(row[2])*half.z;
+    return view_depth(center,row)-reach>0;
+}
+static inline Vec dome_formula(int row,int col) {
+    float longitude=(col%24)*6.2831853f/24,latitude=row*3.14159265f/12;
+    return (Vec){sinf(latitude)*cosf(longitude),cosf(latitude),sinf(latitude)*sinf(longitude)};
+}
 
 static inline uint32_t geometry_hash(uint32_t x) {
     x^=x>>16; x*=0x7feb352du; x^=x>>15; x*=0x846ca68bu; return x^(x>>16);

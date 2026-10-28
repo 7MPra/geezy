@@ -1,7 +1,7 @@
-param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[switch]$Profile,[ValidateRange(0,3)][int]$Beams=0)
+param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[switch]$Master,[switch]$Profile,[ValidateRange(0,3)][int]$Beams=0)
 $ErrorActionPreference='Stop'
-if((@($Lattice,$Checker,$Sculptures,$Trail,$Graphics,$Stencil,$Worlds,$Gpu) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
-if($Profile -and ($Gpu -or $Stencil -or $Checker -or $Trail -or $Lattice)){throw 'Profile requires the complete render path'}
+if((@($Lattice,$Checker,$Sculptures,$Trail,$Graphics,$Stencil,$Worlds,$Gpu,$Master) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
+if($Profile -and ($Gpu -or $Master -or $Stencil -or $Checker -or $Trail -or $Lattice)){throw 'Profile requires the complete render path'}
 Push-Location (Split-Path $PSScriptRoot -Parent)
 $process=$null
 try {
@@ -11,6 +11,7 @@ try {
     if($Sculptures){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_SCULPTURE_CHECK')}
     if($Trail){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_TRAIL_CHECK')}
     if($Graphics){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_GRAPHICS_CHECK')}
+    if($Master){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_MASTER_CHECK')}
     if($Gpu){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_GPU_CHECK')}
     if($Worlds){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_WORLDS_CHECK')}
     if($Stencil){$build=$build.Replace('-DGEEZY_VISUAL_CHECK','-DGEEZY_VISUAL_CHECK -DGEEZY_STENCIL_CHECK')}
@@ -19,7 +20,7 @@ try {
     if($LASTEXITCODE -ne 0){throw 'Visual check build failed'}
     New-Item -ItemType Directory -Force .dolphin-check/Config,artifacts | Out-Null
     "[Settings]`nAspectRatio = 3" | Set-Content .dolphin-check/Config/GFX.ini
-    if($Gpu){Add-Content .dolphin-check/Config/GFX.ini "[Hacks]`nEFBToTextureEnable = False`nDeferEFBCopies = False"}
+    if($Gpu -or $Master){Add-Content .dolphin-check/Config/GFX.ini "[Hacks]`nEFBToTextureEnable = False`nDeferEFBCopies = False"}
     "[Interface]`nConfirmStop = False" | Set-Content .dolphin-check/Config/Dolphin.ini
     Add-Type @"
 using System;
@@ -69,8 +70,8 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    $count=if($Gpu){30}elseif($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
-    $prefix=if($Gpu){'gpu'}elseif($Worlds){'worlds'}elseif($Graphics){'graphics'}elseif($Stencil){'stencil'}elseif($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
+    $count=if($Master){8}elseif($Gpu){30}elseif($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
+    $prefix=if($Master){'master'}elseif($Gpu){'gpu'}elseif($Worlds){'worlds'}elseif($Graphics){'graphics'}elseif($Stencil){'stencil'}elseif($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
     if($Profile){$prefix="profile-$prefix"}
     $timer=[Diagnostics.Stopwatch]::StartNew()
     for($i=0;$i -lt $count;$i++) {
@@ -99,8 +100,8 @@ public static int NeonPixels(byte[] pixels) {
     $results | ConvertTo-Json | Set-Content "artifacts/$prefix-check.json"
     $results | Format-Table frame,blackPixels,whitePixels,neonPixels,mixedPixels
     # RGB channel displacement is inspected alongside the black/white/neon frame checks.
-    if(!$Gpu -and !$Lattice -and !$Checker -and !$Trail -and !$Stencil -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
-    if($Gpu -and !$results[-1].gpuPass){throw 'GPU reference comparison failed or did not finish'}
+    if(!$Master -and !$Gpu -and !$Lattice -and !$Checker -and !$Trail -and !$Stencil -and ($results | Where-Object { $_.blackPixels -gt 0 -and $_.whitePixels -gt 0 -and $_.neonPixels -gt 0 }).Count -lt 8){throw 'Too few frames contain black, white and saturated colors'}
+    if(($Gpu -or $Master) -and !$results[-1].gpuPass){throw 'GPU reference comparison failed or did not finish'}
     if($Worlds) {
         $seen=@($results | Group-Object world,theme)
         if($seen.Count -ne 20){throw 'Not all 5 worlds x 4 themes were captured'}
@@ -113,7 +114,7 @@ public static int NeonPixels(byte[] pixels) {
         if(!($results | Where-Object { $_.whitePixels -gt 1000 })){throw 'Trail source was not rendered'}
         if(!($results | Where-Object { $_.whitePixels -eq 0 -and $_.mixedPixels -gt 1000 })){throw 'Recursive trail was not rendered'}
     }
-    if(!$Gpu -and !$Trail -and ($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
+    if(!$Master -and !$Gpu -and !$Trail -and ($results.hash | Sort-Object -Unique).Count -lt 8){throw 'Render walkthrough appears frozen'}
     if($Stencil) {
         foreach($frame in $results) {
             if(!$frame.centerBlue -or $frame.cornerBlue){throw 'Z-buffer window did not preserve the center and cover the outside'}

@@ -8,6 +8,10 @@ enum {
     KEY_ARROWS=KEY_UP|KEY_RIGHT|KEY_DOWN|KEY_LEFT, KEY_MODS=KEY_ONE|KEY_TWO
 };
 static inline int steering_buttons(unsigned held) { return (held&KEY_ARROWS) && !(held&KEY_MODS); }
+static inline unsigned remote_master_fx(unsigned held) {
+    if((held&KEY_MODS)!=KEY_MODS) return 0;
+    return ((held&KEY_A)?FX_FREEZE:0)|((held&KEY_B)?FX_KALEIDO_4:0);
+}
 static inline void remix(Synth *s) {
     palette_next(s);
     uint32_t recipe=s->seed;
@@ -45,10 +49,27 @@ static inline void camera_cut(Synth *s) {
 enum { CLASS_A=1,CLASS_B=2,CLASS_X=4,CLASS_Y=8,CLASS_L=16,CLASS_R=32,
        CLASS_ZL=64,CLASS_ZR=128,CLASS_UP=256,CLASS_RIGHT=512,CLASS_DOWN=1024,CLASS_LEFT=2048,
        CLASS_PLUS=4096,CLASS_MINUS=8192 };
+static inline unsigned classic_master_fx(unsigned held) {
+    if(!(held&CLASS_ZR)) return 0;
+    const unsigned keys[8]={CLASS_A,CLASS_B,CLASS_X,CLASS_Y,CLASS_UP,CLASS_RIGHT,CLASS_DOWN,CLASS_LEFT};
+    unsigned fx=0; for(int i=0;i<8;i++) if(held&keys[i]) fx|=1u<<i;
+    return fx;
+}
 static inline int classic_controls(Synth *s,unsigned held,float x,float y) {
     unsigned previous=s->classic_held,down=held&~previous; s->classic_held=held;
     int dirty=0;
     if((held&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS)) { reset(s); s->classic_held=held; return 1; }
+    s->classic_fx_latch&=held;
+    if(down&CLASS_ZR) s->classic_zr_pending=!(held&CLASS_R);
+    if(held&CLASS_ZR) {
+        unsigned chord=held&(CLASS_A|CLASS_B|CLASS_X|CLASS_Y|CLASS_UP|CLASS_RIGHT|CLASS_DOWN|CLASS_LEFT);
+        s->classic_fx_latch|=chord;
+        if(chord) s->classic_zr_pending=0;
+    } else if(previous&CLASS_ZR) {
+        if(s->classic_zr_pending) { harmony_bank(s,(s->palette_bank+1)%16); dirty=1; }
+        s->classic_zr_pending=0;
+    }
+    down&=~s->classic_fx_latch;
     if(down&CLASS_X) { if(held&CLASS_L) s->layout=(s->layout+1)%4; else if(held&CLASS_R) camera_cut(s); else { palette_next(s); dirty=1; } }
     if((down&CLASS_Y) && (held&(CLASS_L|CLASS_R))==(CLASS_L|CLASS_R)) { remix(s); dirty=1; }
     else if(down&CLASS_Y) {
@@ -56,14 +77,13 @@ static inline int classic_controls(Synth *s,unsigned held,float x,float y) {
         else { if(held&CLASS_R) s->motion_mode=(s->motion_mode+1)%4; else next_scene(s); hit(s,1); }
     }
     if(down&CLASS_B) s->mask_pattern=(s->mask_pattern+1)%8;
-    if(down&CLASS_ZL) { s->theme=(s->theme+1)%4; dirty=1; }
-    if((down&CLASS_ZR) && !(held&CLASS_R)) { harmony_bank(s,(s->palette_bank+1)%16); dirty=1; }
+    if((down&CLASS_ZL) && !(held&CLASS_R)) { s->theme=(s->theme+1)%4; dirty=1; }
     if(down&CLASS_PLUS) { if(held&CLASS_L) s->hud_visible=!s->hud_visible; else change_gear(s,1); }
     if(down&CLASS_MINUS) change_gear(s,-1);
     const unsigned arrows[4]={CLASS_UP,CLASS_RIGHT,CLASS_DOWN,CLASS_LEFT};
     for(int i=0;i<4;i++) if(down&arrows[i]) {
         if(held&CLASS_L) { theme_preset(s,i+((held&CLASS_R)?4:0)); dirty=1; }
-        else if(held&CLASS_R) s->mask_pattern=i+((held&CLASS_ZR)?4:0);
+        else if(held&CLASS_R) s->mask_pattern=i+((held&CLASS_ZL)?4:0);
         else { Synth preset=*s; space_preset(&preset,i);
             space_preset(s,i+((preset.backdrop==s->backdrop && preset.beam_style==s->beam_style)?4:0)); }
     }
@@ -76,6 +96,12 @@ static inline int classic_controls(Synth *s,unsigned held,float x,float y) {
 }
 // 1/2 taps commit on release so a chord never also changes palette or scene.
 static inline int controls(Synth *s,unsigned held) {
+    s->remote_fx_latch&=held;
+    if(remote_master_fx(held)) {
+        s->remote_fx_latch|=held&(KEY_MODS|KEY_A|KEY_B);
+        s->pending_taps=0; s->remix_pending=0;
+    }
+    held&=~s->remote_fx_latch;
     unsigned down=held&~s->held_buttons,up=s->held_buttons&~held;
     s->held_buttons=held;
     if((held&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS)) {

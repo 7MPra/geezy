@@ -1,13 +1,14 @@
 #ifdef GEEZY_GPU_CHECK
-enum { GPU_CASES=276 };
+enum { GPU_CASES=324 };
 static void *gpu_pixels[2];
 static void gpu_case(int test,int fast) {
     // New cases compare against stage 1; the original 104 still check the immediate reference.
-    gpu_mesh_enabled=test>=104?1:fast; gpu_stage2_enabled=fast; primary_surface=0; shell_surface=0;
+    gpu_mesh_enabled=test>=104?1:fast; gpu_stage2_enabled=fast; gpu_stage3_enabled=fast; primary_surface=0; shell_surface=0;
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     ortho(); material(NULL); tint=clear_color();
     if(synth.slow) tint=strobe_lit(&synth)?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
     mask_rect(-1,-1,2,2);
+    if(test>=276) { trail_valid=0; render_scene(); return; }
     if(test>=212) {
         projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE); primary_surface=1;
         Sculpture g=sculpture(7,0,0); g.symmetry=3+(test-212)%4; g.sharpness=0.5f+((test-212)%4)*0.6f;
@@ -81,9 +82,16 @@ static void gpu_check(void) {
                 synth.live.burst=n>=20 && n<40?1.3f:0;
                 synth.mask_pattern=n>=40?4:6; synth.mask_env=1; synth.mask_clock=1;
             }
-            if(test>=212) {
+            if(test>=212 && test<276) {
                 n=test-212; synth.theme=n/16; synth.skin=(n/4)%4;
                 synth.world_mode=0; synth.slow=0; synth.tension=0;
+            }
+            if(test>=276) {
+                n=test-276; synth.world_mode=(int[]){0,1,3}[n%3]; synth.theme=(n/3)%4;
+                synth.backdrop=2; synth.gear=3; synth.layout=1; synth.skin=0;
+                synth.slow=n>=24; synth.tension=synth.slow?0.7f:0;
+                synth.live.fov=n>=24?125:55; synth.live.roll=n%2?60:-50;
+                synth.live.aim_x=n%2?0.35f:-0.35f; synth.live.aim_y=n%2?-0.3f:0.3f;
             }
             synth.hud_visible=0; sample_pose(&synth); make_metal();
         }
@@ -91,7 +99,7 @@ static void gpu_check(void) {
         for(int fast=0;fast<2;fast++) {
             u64 start=gettime(); gpu_case(test,fast); u64 submitted=gettime(); GX_DrawDone(); u64 done=gettime();
             cpu[fast]+=ticks_to_microsecs(submitted-start); total[fast]+=ticks_to_microsecs(done-start);
-            if(test>=152) stage2_cpu[fast]+=ticks_to_microsecs(submitted-start);
+            if(test>=152 && test<276) stage2_cpu[fast]+=ticks_to_microsecs(submitted-start);
             gpu_copy(gpu_pixels[fast]);
         }
         calls+=mesh_calls; builds+=mesh_builds;
@@ -114,7 +122,7 @@ static void gpu_check(void) {
         test++;
         if(test==GPU_CASES && calls==0) failed++;
     }
-    gpu_mesh_enabled=gpu_stage2_enabled=1; quantize_vertices=0;
+    gpu_mesh_enabled=gpu_stage2_enabled=gpu_stage3_enabled=1; quantize_vertices=0;
     ortho(); material(NULL); tint=(GXColor){0,0,0,255}; mask_rect(-1,-1,2,2);
     tint=failed?(GXColor){255,0,0,255}:test==GPU_CASES?(GXColor){0,255,0,255}:(GXColor){255,255,0,255};
     mask_rect(-1,-1,0.1f,0.1f); tint=(GXColor){255,255,255,255};

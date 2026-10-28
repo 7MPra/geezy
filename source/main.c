@@ -25,11 +25,17 @@ static unsigned check_sculpture;
 static volatile int quitting;
 static GXRModeObj *mode;
 static GXTexObj chrome_tex, grid_tex[3], history, dither_tex, trail_tex, halftone_tex;
+static GXTexObj freeze_tex;
 static u16 chrome_pixels[128*128] ATTRIBUTE_ALIGN(32);
 static u16 grid_pixels[3][GRID_TEXELS] ATTRIBUTE_ALIGN(32);
 static u8 dither_pixels[64] ATTRIBUTE_ALIGN(32);
 static u8 halftone_pixels[512] ATTRIBUTE_ALIGN(32);
 static void *history_pixels, *trail_pixels;
+static void *freeze_pixels;
+static int freeze_valid;
+#ifdef GEEZY_MASTER_CHECK
+static unsigned master_scene_calls,master_copy_calls;
+#endif
 static int trail_valid, shell_surface;
 static int quantize_vertices, in_3d;
 static float aspect;
@@ -153,6 +159,9 @@ static void triangle(Vec a,Vec b,Vec c,u8 shade) {
 }
 #include "gx_mesh.h"
 static void copy_texture(void *pixels) {
+#ifdef GEEZY_MASTER_CHECK
+    master_copy_calls++;
+#endif
     profile_copy();
     GX_CopyTex(pixels,GX_FALSE); GX_PixModeSync();
     // The GPU fence orders texture reads; only CPU readback needs GX_DrawDone here.
@@ -680,12 +689,18 @@ static void vector_tunnel(void) {
     }
     quantize_vertices=synth.slow;
 }
-static Vec dome_direction(int row,int col) {
-    float longitude=(col%24)*6.2831853f/24,latitude=row*3.14159265f/12;
-    return (Vec){sinf(latitude)*cosf(longitude),cosf(latitude),sinf(latitude)*sinf(longitude)};
+static Vec dome_directions[13][24];
+static float dome_sine[13][24],dome_cosine[13][24];
+static void dome_init(void) {
+    for(int row=0;row<13;row++) for(int col=0;col<24;col++) {
+        Vec n=dome_directions[row][col]=dome_formula(row,col);
+        float phase=n.x*5+n.z*3;
+        dome_sine[row][col]=sinf(phase); dome_cosine[row][col]=cosf(phase);
+    }
 }
 static void dome(void) {
     Vec eye=orbit_eye(&synth.draw);
+    float phase_sine=sinf(synth.draw.phase),phase_cosine=cosf(synth.draw.phase);
     quantize_vertices=0; shell_surface=1;
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
     for(int row=0;row<12;row++) for(int col=0;col<24;col++) {
@@ -693,8 +708,10 @@ static void dome(void) {
         u8 shade=(row+col)%7==0?0:255;
         begin_3d(GX_QUADS,4);
         for(int j=0;j<4;j++) {
-            Vec n=dome_direction(row+(j>=2),col+(j==1||j==2));
-            float wave=sinf(n.x*5+n.z*3+synth.draw.phase)*8;
+            int r=row+(j>=2),c=(col+(j==1||j==2))%24;
+            Vec n=gpu_stage3_enabled?dome_directions[r][c]:dome_formula(r,c);
+            float wave=(gpu_stage3_enabled?dome_sine[r][c]*phase_cosine+dome_cosine[r][c]*phase_sine:
+                sinf(n.x*5+n.z*3+synth.draw.phase))*8;
             Vec pos=add(eye,scale_vec(n,150+wave));
             if(surface_kind==GRID) vertex(pos,(j==1||j==2)?1:0,(j>=2?1:0)+synth.draw.uv_shift*3,shade,255);
             else normal_vertex(pos,scale_vec(n,-1),shade);
@@ -734,6 +751,7 @@ static void mask_rect(float x,float y,float w,float h) {
 }
 #include "overlay.h"
 #include "worlds.h"
+#include "master_fx.h"
 static void small_text(const char *text,float x,float y) {
     float dot=0.008f;
     for(int i=0;text[i];i++) for(int row=0;row<5;row++) for(int col=0;col<5;col++)
@@ -795,6 +813,14 @@ static void render_scene(void) {
     tint=(GXColor){0,0,0,255}; mask_rect(-1,-1,2,2);
     synth.mask_pattern=6; synth.mask_env=1; overlay(); return;
 #endif
+    if(!(synth.master_fx&FX_FREEZE)) freeze_valid=0;
+    RenderPlan plan=render_plan(&synth,freeze_valid);
+    if(plan.hold) {
+        profile_mark(TIME_SCENE); master_hold(plan.hold); profile_mark(TIME_EFFECTS); return;
+    }
+#ifdef GEEZY_MASTER_CHECK
+    master_scene_calls++;
+#endif
     static unsigned last_tick;
     static int last_world;
     if(synth.tick<last_tick || synth.world_mode!=last_world) trail_valid=0;
@@ -826,7 +852,6 @@ static void render_scene(void) {
         independent_world();
     }
     profile_mark(TIME_SCENE);
-    RenderPlan plan=render_plan(&synth);
     if(plan.history || !gpu_stage2_enabled) copy_texture(history_pixels);
     if(plan.echo) feedback_echo();
 #ifndef GEEZY_LATTICE_CHECK
@@ -835,7 +860,8 @@ static void render_scene(void) {
         trail_valid=1;
     } else trail_valid=0;
     profile_mark(TIME_EFFECTS);
-    overlay(); if(synth.hud_visible) telemetry();
+    overlay(); master_finish(plan);
+    if(synth.hud_visible && !(synth.master_fx&FX_FREEZE)) telemetry();
 #ifdef GEEZY_WORLDS_CHECK
     ortho(); material(NULL);
     tint=(GXColor){32+synth.world_mode*32,32+synth.theme*48,17,255}; mask_rect(-1,-1,0.04f,0.04f);
@@ -845,9 +871,12 @@ static void render_scene(void) {
 #endif
 }
 #include "gpu_check.h"
+#include "master_check.h"
 static void render(void) {
     mesh_frame++;
-#ifdef GEEZY_GPU_CHECK
+#if defined(GEEZY_MASTER_CHECK)
+    master_check();
+#elif defined(GEEZY_GPU_CHECK)
     mesh_calls=mesh_builds=0; gpu_check();
 #else
     render_scene();
@@ -862,11 +891,12 @@ int main(void) {
     void *fb[2]={SYS_AllocateFramebuffer(mode),SYS_AllocateFramebuffer(mode)};
     void *fifo=memalign(32,256*1024);
     u32 history_size=GX_GetTexBufferSize(mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_FALSE,0);
-    history_pixels=memalign(32,history_size); trail_pixels=memalign(32,history_size);
-    if(!fb[0]||!fb[1]||!fifo||!history_pixels||!trail_pixels) return 1;
+    history_pixels=memalign(32,history_size); trail_pixels=memalign(32,history_size); freeze_pixels=memalign(32,history_size);
+    if(!fb[0]||!fb[1]||!fifo||!history_pixels||!trail_pixels||!freeze_pixels) return 1;
     fb[0]=MEM_K0_TO_K1(fb[0]); fb[1]=MEM_K0_TO_K1(fb[1]);
     memset(fifo,0,256*1024); memset(history_pixels,0,history_size); DCFlushRange(history_pixels,history_size);
     memset(trail_pixels,0,history_size); DCFlushRange(trail_pixels,history_size);
+    memset(freeze_pixels,0,history_size); DCFlushRange(freeze_pixels,history_size);
     VIDEO_Configure(mode); VIDEO_SetNextFramebuffer(fb[0]);
     VIDEO_SetBlack(TRUE); VIDEO_Flush(); VIDEO_WaitVSync();
     if(mode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
@@ -885,6 +915,8 @@ int main(void) {
     GX_SetNumChans(1); GX_SetNumTevStages(1);
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
     mesh_init();
+    dome_init();
+    master_init();
     GX_InitTexObj(&chrome_tex,chrome_pixels,128,128,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&chrome_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     for(int role=0;role<3;role++) {
@@ -893,6 +925,8 @@ int main(void) {
     }
     GX_InitTexObj(&history,history_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&history,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
+    GX_InitTexObj(&freeze_tex,freeze_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
+    GX_InitTexObjLOD(&freeze_tex,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_InitTexObj(&trail_tex,trail_pixels,mode->fbWidth,mode->efbHeight,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&trail_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
     GX_SetTexCopySrc(0,0,mode->fbWidth,mode->efbHeight);
@@ -1021,6 +1055,7 @@ int main(void) {
         int dirty=controls(&synth,keys);
         dirty|=classic_controls(&synth,classic,stick_x,stick_y);
         dirty|=midi_poll(&synth,&midi_input);
+        set_master_fx(&synth,remote_master_fx(keys)|classic_master_fx(classic)|midi_master_fx(&midi_input));
         int midi_mask=midi_overlay(&midi_input);
         if(midi_mask>=0) synth.mask_pattern=midi_mask;
         int midi_boost=midi_steering(&synth,&midi_input);
@@ -1035,8 +1070,9 @@ int main(void) {
                 shake(&synth,sqrtf(gf.x*gf.x+gf.y*gf.y+gf.z*gf.z));
             }
 #endif
-            advance(&synth,dt,!!(keys&KEY_A)||!!(classic&CLASS_A)||midi_input.held[4],
-                steering_buttons(keys)||classic_boost||midi_boost,!!(keys&KEY_B)||!!(classic&CLASS_B)||midi_mask>=0);
+            unsigned performance_keys=keys&~synth.remote_fx_latch,performance_classic=classic&~synth.classic_fx_latch;
+            advance(&synth,dt,!!(performance_keys&KEY_A)||!!(performance_classic&CLASS_A)||midi_input.held[4],
+                steering_buttons(performance_keys)||classic_boost||midi_boost,!!(performance_keys&KEY_B)||!!(performance_classic&CLASS_B)||midi_mask>=0);
         }
         profile_mark(TIME_INPUT);
         GX_SetColorUpdate(GX_TRUE); GX_InvalidateTexAll(); render();
