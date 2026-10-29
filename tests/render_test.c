@@ -8,7 +8,7 @@ int main(void) {
         s.draw.burst=s.tension=s.mask_env=0;
         RenderPlan p=render_plan(&s,0);
         assert(!p.echo && !p.history);
-        assert(p.trail==(!slow && theme==0 && world!=3));
+        assert(p.trail==(!slow && theme==0));
         s.mask_env=0.002f; p=render_plan(&s,0); assert(p.history==(pattern==4));
         s.mask_env=0.001f; p=render_plan(&s,0); assert(!p.history);
         s.draw.burst=0.5f; s.tension=0.3f; p=render_plan(&s,0); assert(!p.echo);

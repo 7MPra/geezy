@@ -179,4 +179,71 @@ static inline int controls(Synth *s,unsigned held) {
     if(down&KEY_MINUS) change_gear(s,-1);
     return dirty;
 }
+// The second remote owns action buttons; its FX chords consume their keys until release.
+typedef struct {
+    unsigned held,latch;
+    int connected,ready[2];
+    float cooldown[2],window[2];
+} DualInput;
+static inline unsigned right_master_fx(unsigned held) {
+    if(!(held&KEY_B)) return 0;
+    unsigned fx=0;
+    if(held&KEY_UP) fx|=FX_KALEIDO_4;
+    if(held&KEY_RIGHT) fx|=FX_MIRROR_X;
+    if(held&KEY_DOWN) fx|=FX_FREEZE;
+    if(held&KEY_LEFT) fx|=FX_INVERT;
+    if(held&KEY_ONE) fx|=FX_MOSAIC;
+    if(held&KEY_TWO) fx|=FX_STROBE_KILL;
+    if(held&KEY_MINUS) fx|=FX_BLACKOUT;
+    if(held&KEY_PLUS) fx|=FX_WHITEOUT;
+    return fx?fx:FX_KALEIDO_4;
+}
+static inline int dual_controls(Synth *s,DualInput *input,unsigned held,int connected) {
+    if(connected!=input->connected) {
+        *input=(DualInput){.connected=connected,.ready={1,1}};
+        s->held_buttons=s->pending_taps=s->remix_pending=s->remote_fx_latch=0;
+    }
+    if(!connected) return 0;
+    unsigned down=held&~input->held; input->held=held; input->latch&=held;
+    if(held&KEY_B) input->latch|=held&(KEY_ARROWS|KEY_MODS|KEY_PLUS|KEY_MINUS);
+    down&=~input->latch;
+    int dirty=0;
+    if(down&KEY_A) camera_cut(s);
+    if(down&KEY_UP) next_scene(s);
+    if(down&KEY_RIGHT) { palette_next(s); dirty=1; }
+    if(down&KEY_DOWN) s->motion_mode=(s->motion_mode+1)%4;
+    if(down&KEY_LEFT) s->layout=(s->layout+1)%4;
+    if(down&KEY_PLUS) change_gear(s,1);
+    if(down&KEY_MINUS) change_gear(s,-1);
+    if(down&KEY_ONE) s->world_mode=(s->world_mode+1)%5;
+    if(down&KEY_TWO) { s->theme=(s->theme+1)%4; dirty=1; }
+    return dirty;
+}
+static inline int remote_gestures(Synth *s,DualInput *input,const Vec gf[2],const int valid[2],
+                                  const int held_b[2],float dt) {
+    int hands=input->connected?2:1,twists=0,event[2]={0,0}; float tilt=0;
+    dt=fmaxf(0,fminf(dt,0.1f));
+    for(int i=0;i<hands;i++) {
+        input->cooldown[i]=fmaxf(0,input->cooldown[i]-dt);
+        input->window[i]=fmaxf(0,input->window[i]-dt);
+        if(!valid[i] || !isfinite(gf[i].x) || !isfinite(gf[i].y) || !isfinite(gf[i].z)) continue;
+        if(held_b[i]) { tilt+=fmaxf(-1,fminf(1,gf[i].x)); twists++; }
+        float magnitude=sqrtf(gf[i].x*gf[i].x+gf[i].y*gf[i].y+gf[i].z*gf[i].z);
+        if(hands==1) { shake(s,magnitude); continue; }
+        if(magnitude<1.3f) input->ready[i]=1;
+        if(magnitude>1.65f && input->ready[i] && input->cooldown[i]==0) {
+            event[i]=1; input->ready[i]=0; input->cooldown[i]=0.18f; input->window[i]=0.12f;
+        }
+    }
+    s->wrist_target=twists?tilt/twists:0;
+    if(hands==2 && (event[0]||event[1])) {
+        if((input->window[0]>0 && input->window[1]>0) || (held_b[0]&&held_b[1])) {
+            remix(s); hit(s,3); input->window[0]=input->window[1]=0;
+            input->cooldown[0]=input->cooldown[1]=0.3f; return 1;
+        }
+        hit(s,2.5f);
+    }
+    return 0;
+}
+
 #endif

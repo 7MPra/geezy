@@ -43,6 +43,13 @@ static inline float atrium_piston(float phase,uint32_t h,float burst) {
     float position=stops[n]+(stops[(n+1)%4]-stops[n])*ease;
     return position*10+fminf(2,fmaxf(0,burst))*2;
 }
+static inline Vec hybrid_eye(const Synth *s) {
+    return (Vec){2.5f*sinf(s->draw.azimuth)+(s->cut%3-1)*1.2f,
+        1.8f*sinf(s->draw.elevation),fmaxf(-6,fminf(12,s->draw.radius-16))};
+}
+static inline Vec cloud_focus(const Synth *s) {
+    return (Vec){4*sinf(s->draw.phase*0.3f),3*cosf(s->draw.phase*0.23f),-28};
+}
 static inline Vec cloud_lattice(int i,Vec camera) {
     return (Vec){world_cell(i%12,camera.x,8),world_cell((i/12)%12,camera.y,8),world_cell(i/144,camera.z,6)};
 }
@@ -87,6 +94,8 @@ static inline Vec cloud_position(int i,const Synth *s,const Vec *cells,int count
     if(form==0) target=cloud_lattice(i,s->draw.world_cam);
     else if(form==1) target=cloud_shell(i,s->draw.phase);
     else target=cloud_glyph(i,cells,count);
+    if(s->world_mode==3) target=form==0?add(scale_vec(target,0.4f),cloud_focus(s)):
+        add(target,add(cloud_focus(s),(Vec){0,0,28}));
     float amount=crystal_amount(s); amount=amount*amount*(3-2*amount);
     return add(scale_vec(free,1-amount),scale_vec(target,amount));
 }

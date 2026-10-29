@@ -32,9 +32,19 @@ typedef struct {
 static inline Sculpture sculpture(uint32_t seed,int shape,int slot) {
     uint32_t h=geometry_hash(seed^(uint32_t)(shape+1)*0x9e3779b9u^(uint32_t)(slot+1)*0x85ebca6bu);
     unsigned pair=(h>>4)%4;
-    return (Sculpture){h%9,(unsigned[]){2,3,3,2}[pair],(unsigned[]){3,4,5,5}[pair],
+    return (Sculpture){h%14,(unsigned[]){2,3,3,2}[pair],(unsigned[]){3,4,5,5}[pair],
         8+(h>>7)%5,3+(h>>10)%3,(unsigned[]){4,8,12}[(h>>12)%3],
         (h>>14)%3,(h>>16)%7,3+(h>>20)%6,0.22f+(h>>24)%7*0.045f,0.5f+(h>>27)%5*0.6f};
+}
+static inline Vec helix_point(float u,float v,unsigned turns,float tube) {
+    float a=u*6.2831853f*turns,r=1.8f+(0.24f+tube)*cosf(v);
+    return (Vec){r*cosf(a),u*8-4+(0.24f+tube)*sinf(v),r*sinf(a)};
+}
+static inline Vec mobius_point(float u,float v,unsigned half_twists) {
+    float a=u*6.2831853f,t=a*half_twists*0.5f;
+    float width=0.95f*cosf(v),edge=0.13f*sinf(v);
+    float radial=width*cosf(t)-edge*sinf(t),z=width*sinf(t)+edge*cosf(t);
+    return (Vec){(2.8f+radial)*cosf(a),(2.8f+radial)*sinf(a),z};
 }
 static inline Vec knot_center(float t,unsigned p,unsigned q) {
     float r=2.2f+0.7f*cosf(q*t);

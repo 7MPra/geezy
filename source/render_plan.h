@@ -10,7 +10,7 @@ static inline RenderPlan render_plan(const Synth *s,int freeze_ready) {
     if(hold) return (RenderPlan){.hold=hold};
     int echo=s->draw.burst>0.5f || s->tension>0.3f;
     return (RenderPlan){echo,echo || (s->mask_pattern==4 && s->mask_env>0.001f),
-        !s->slow && s->theme==0 && s->world_mode!=3 && !(fx&FX_FREEZE),
+        !s->slow && s->theme==0 && !(fx&FX_FREEZE),
         !!(fx&(FX_MIRROR_X|FX_KALEIDO_4|FX_MOSAIC)),!!(fx&FX_FREEZE),HOLD_NONE};
 }
 static inline void master_uv(unsigned fx,float *u,float *v) {

@@ -17,6 +17,7 @@
 
 static Synth synth;
 static MidiInput midi_input;
+static DualInput dual_input;
 static Palette palette;
 static int background_role;
 #ifdef GEEZY_SCULPTURE_CHECK
@@ -40,9 +41,10 @@ static int trail_valid, shell_surface;
 static int quantize_vertices, in_3d;
 static float aspect;
 static Mtx view;
+static Vec scene_eye;
 static GXColor tint={255,255,255,255};
 enum { CHROME, GRID, WIRE, MATTE, GHOST, SOLID };
-static int surface_kind, primary_surface;
+static int surface_kind, primary_surface, sculpture_surface;
 static void power(void) { quitting=1; }
 static void reset_button(u32 irq,void *ctx) { (void)irq; (void)ctx; quitting=1; }
 
@@ -83,7 +85,10 @@ static void make_metal(void) {
     GX_SetCopyClear(clear_color(),0x00ffffff);
     trail_valid=0;
 }
+#include "tev.h"
 static void material(GXTexObj *texture) {
+    detail_kind=0; GX_SetNumIndStages(0);
+    for(int i=0;i<4;i++) { GX_SetTevDirect(i); GX_SetTevSwapMode(i,GX_TEV_SWAP0,GX_TEV_SWAP0); }
     tint=(GXColor){255,255,255,255};
     GX_SetNumTevStages(1); GX_SetTevSwapMode(GX_TEVSTAGE0,GX_TEV_SWAP0,GX_TEV_SWAP0); GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS,GX_DIRECT); GX_SetVtxDesc(GX_VA_CLR0,GX_DIRECT);
@@ -102,6 +107,7 @@ static void surface(int kind) {
     }
     if(primary_surface && synth.theme==2 && kind!=WIRE && kind!=MATTE) kind=SOLID;
     if(shell_surface && synth.theme==1) kind=SOLID;
+    if(sculpture_surface) kind=sculpture_surface==1?WIRE:GHOST;
     surface_kind=kind;
     material(kind==CHROME?&chrome_tex:kind==GRID?&grid_tex[background_role%3]:kind==GHOST?&chrome_tex:NULL);
     if(kind==MATTE) tint=(GXColor){0,0,0,255};
@@ -115,6 +121,7 @@ static void surface(int kind) {
         return;
     }
     if(synth.theme==3 && kind!=MATTE) { material(NULL); tint=gx_color(primary_surface?palette.primary:palette.secondary); }
+    if((kind==CHROME || kind==GRID) && synth.theme!=3) detail_material(kind);
     if(kind==GHOST || synth.theme==3) {
         GX_SetNumTevStages(2); GX_SetNumTexGens(2);
         Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=synth.theme==3?1:16;
@@ -141,7 +148,7 @@ static void normal_vertex(Vec p,Vec n,u8 shade) {
 // All 3D primitives share this guard: WIRE can never submit a filled face.
 static void begin_3d(u8 primitive,u16 count) {
     assert(surface_kind!=WIRE || primitive==GX_LINES || primitive==GX_LINESTRIP || primitive==GX_POINTS);
-    assert(synth.world_mode!=3 || primitive==GX_LINES || primitive==GX_LINESTRIP || primitive==GX_POINTS);
+    // Quantum particles keep their line/point contract; hybrid layers may contain faces.
     GX_Begin(primitive,GX_VTXFMT0,count);
 }
 static void wire_points(const Vec *p,int count,u8 shade) {
@@ -242,6 +249,7 @@ static void feedback_echo(void) {
 static void feedback_trail(void) {
     if(!trail_valid || synth.slow || synth.theme!=0) return;
     ortho(); material(&trail_tex);
+    GX_SetNumTexGens(3); Mtx base; guMtxIdentity(base); detail_uv(base,GX_TG_TEX0); indirect_stage();
     float amount=0.25f+0.55f*synth.overdrive+0.025f*synth.gear;
     float zoom=1.02f+0.04f*synth.overdrive,angle=0.008f+synth.overdrive*0.018f;
     // Subtract before gain: black remains exactly zero and old highlights eventually disappear.
@@ -269,10 +277,12 @@ static void projection(void) {
     Mtx44 p; guPerspective(p,synth.draw.fov,aspect,0.2f,220);
     GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
     Vec eye=orbit_eye(&synth.draw),target=view_target(&synth.draw),vertical=camera_up(&synth.draw);
+    scene_eye=eye;
     guVector e={eye.x,eye.y,eye.z},at={target.x,target.y,target.z},up={vertical.x,vertical.y,vertical.z};
     Mtx look,bank; guLookAt(look,&e,&up,&at);
-    guVector axis={0,0,1}; guMtxRotAxisDeg(bank,&axis,synth.draw.roll);
-    guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
+    float a=synth.draw.roll*0.0174532925f,c=cosf(a),sn=sinf(a);
+    guMtxIdentity(bank); bank[0][0]=bank[1][1]=c; bank[0][1]=-sn; bank[1][0]=sn;
+    c_guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
 }
 static Vec mesh_pos[97][13],mesh_normal[97][13];
 static int compile_mesh(MeshList *slot,int rows,int cols,float cap_radius,float arc) {
@@ -281,22 +291,22 @@ static int compile_mesh(MeshList *slot,int rows,int cols,float cap_radius,float 
     if(wire) {
         for(int i=0;i<=rows;i+=2) {
             GX_Begin(GX_LINESTRIP,GX_VTXFMT1,cols+1);
-            for(int j=0;j<=cols;j++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],0,0);
+            for(int j=0;j<=cols;j++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],i*4.0f/rows,j/(float)cols);
             GX_End();
         }
         for(int j=0;j<cols;j++) {
             GX_Begin(GX_LINESTRIP,GX_VTXFMT1,rows+1);
-            for(int i=0;i<=rows;i++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],0,0);
+            for(int i=0;i<=rows;i++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],i*4.0f/rows,j/(float)cols);
             GX_End();
         }
         for(int i=0;i<rows;i+=4) {
             GX_Begin(GX_POINTS,GX_VTXFMT1,cols);
-            for(int j=0;j<cols;j++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],0,0);
+            for(int j=0;j<cols;j++) list_vertex(mesh_pos[i][j],mesh_normal[i][j],i*4.0f/rows,j/(float)cols);
             GX_End();
         }
     } else for(int i=0;i<rows;i++) {
         GX_Begin(GX_TRIANGLESTRIP,GX_VTXFMT1,2*(cols+1));
-        for(int j=0;j<=cols;j++) for(int k=0;k<2;k++) list_vertex(mesh_pos[i+k][j],mesh_normal[i+k][j],0,0);
+        for(int j=0;j<=cols;j++) for(int k=0;k<2;k++) list_vertex(mesh_pos[i+k][j],mesh_normal[i+k][j],(i+k)*4.0f/rows,j/(float)cols);
         GX_End();
     }
     if(cap_radius>0 && arc<6.28f) for(int end=0;end<2;end++) {
@@ -320,7 +330,7 @@ static int compile_mesh(MeshList *slot,int rows,int cols,float cap_radius,float 
 #endif
     return slot->bytes!=0;
 }
-static void mesh(int rows,int cols,Vec center,float size,float a,float b) {
+static void mesh(int rows,int cols,Vec center,float size,float a,float b,int grid_uv) {
     for(int i=0;i<=rows;i++) for(int j=0;j<=cols;j++) {
         mesh_pos[i][j]=add(center,scale_vec(rotate(mesh_pos[i][j],a,b),size));
         mesh_normal[i][j]=rotate(mesh_normal[i][j],a,b);
@@ -339,7 +349,10 @@ static void mesh(int rows,int cols,Vec center,float size,float a,float b) {
         for(int i=0;i<rows;i+=4) wire_points(mesh_pos[i],cols,255);
     } else for(int i=0;i<rows;i++) {
         begin_3d(GX_TRIANGLESTRIP,2*(cols+1));
-        for(int j=0;j<=cols;j++) for(int k=0;k<2;k++) normal_vertex(mesh_pos[i+k][j],mesh_normal[i+k][j],255);
+        for(int j=0;j<=cols;j++) for(int k=0;k<2;k++) {
+            if(grid_uv && surface_kind==GRID) vertex(mesh_pos[i+k][j],(i+k)*4.0f/rows,j/(float)cols+synth.draw.uv_shift*6,255,255);
+            else normal_vertex(mesh_pos[i+k][j],mesh_normal[i+k][j],255);
+        }
         GX_End();
     }
 }
@@ -353,7 +366,7 @@ static void ring(Vec center,float radius,float tube,float a,float b,int sides,fl
         mesh_pos[i][j]=(Vec){(radius+tube*cosf(v))*cosf(u),(radius+tube*cosf(v))*sinf(u),tube*sinf(v)};
     }
     if(cached && compile_mesh(cached,32,sides,radius,arc)) { cached_mesh_draw(cached,center,1,a,b); return; }
-    mesh(32,sides,center,1,a,b);
+    mesh(32,sides,center,1,a,b,0);
     if(arc<6.28f) for(int end=0;end<2;end++) {
         float u=end?arc:0;
         Vec cap=add(center,rotate((Vec){radius*cosf(u),radius*sinf(u),0},a,b));
@@ -434,7 +447,7 @@ static void knot(Vec center,float size,float angle,Sculpture g) {
         }
     }
     if(cached && compile_mesh(cached,96,8,0,0)) { cached_mesh_draw(cached,center,size,angle,angle*0.43f); return; }
-    mesh(96,8,center,size,angle,angle*0.43f);
+    mesh(96,8,center,size,angle,angle*0.43f,0);
 }
 static void polygon_slab(Vec center,float radius,float height,float angle,int sides) {
     Vec p[24];
@@ -506,13 +519,14 @@ static void polyform(Vec center,float size,float angle,Sculpture g) {
         }
         for(int j=0;j<=12;j++) mesh_normal[32][j]=mesh_normal[0][j];
         if(cached && compile_mesh(cached,32,12,0,0)) cached_mesh_draw(cached,center,size,angle,angle*0.37f);
-        else mesh(32,12,center,size,angle,angle*0.37f);
+        else mesh(32,12,center,size,angle,angle*0.37f,0);
     }
     for(unsigned i=0;i<g.profile+2;i++) {
         Vec offset=rotate((Vec){(i%2?1:-1)*3.0f,1.4f-i*1.1f,0.5f},angle,angle*0.37f);
         octahedron(add(center,scale_vec(offset,size)),size*(0.5f+g.tube),-angle, i%2?MATTE:CHROME,0);
     }
 }
+#include "sculptures.h"
 static void sculpture_draw(Vec center,float size,float phase,Sculpture g) {
     switch(g.family) {
     case 0:
@@ -529,6 +543,11 @@ static void sculpture_draw(Vec center,float size,float phase,Sculpture g) {
         break;
     case 7: glyph_totem(center,size,phase,g); break;
     case 8: polyform(center,size,phase,g); break;
+    case 9: pipe_labyrinth(center,size,phase,g); break;
+    case 10: mechanical_helix(center,size,phase,g); break;
+    case 11: menger_cage(center,size,phase,g); break;
+    case 12: twisted_mesh(center,size,phase,g,1); break;
+    case 13: mechanical_spine(center,size,phase,g); break;
     }
 }
 static void mega(void) {
@@ -629,7 +648,7 @@ static void trusses(Vec world,Vec eye,float flow) {
     }
 }
 static void swarm(void) {
-    Vec eye=orbit_eye(&synth.draw);
+    Vec eye=scene_eye;
     Vec world=synth.slow?synth.draw.world_cam:synth.live.world_cam;
     float flow=(synth.slow?synth.draw.uv_shift:synth.live.uv_shift)*2;
     quantize_vertices=0; background_role=0; surface(GRID);
@@ -668,7 +687,7 @@ static void swarm(void) {
 }
 static void vector_tunnel(void) {
     const Pose *p=synth.slow?&synth.draw:&synth.live;
-    Vec eye=orbit_eye(&synth.draw),direction=unit(p->travel);
+    Vec eye=scene_eye,direction=unit(p->travel);
     float distance=sqrtf(p->travel.x*p->travel.x+p->travel.y*p->travel.y+p->travel.z*p->travel.z);
     if(distance<0.0001f) direction=synth.flow;
     Vec tangent=unit(cross(direction,fabsf(direction.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0}));
@@ -699,9 +718,10 @@ static void dome_init(void) {
     }
 }
 static void dome(void) {
-    Vec eye=orbit_eye(&synth.draw);
+    Vec eye=scene_eye;
     float phase_sine=sinf(synth.draw.phase),phase_cosine=cosf(synth.draw.phase);
     quantize_vertices=0; shell_surface=1;
+    GX_SetFog(GX_FOG_NONE,0,1,0,1,clear_color());
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
     for(int row=0;row<12;row++) for(int col=0;col<24;col++) {
         background_role=(row+col)%3; surface((row+col+synth.shape)%3?CHROME:GRID);
@@ -723,7 +743,7 @@ static void dome(void) {
 }
 static void warp_tunnel(void) {
     const Pose *p=synth.slow?&synth.draw:&synth.live;
-    Vec eye=orbit_eye(&synth.draw),axis=p->tunnel_axis;
+    Vec eye=scene_eye,axis=p->tunnel_axis;
     Vec right=unit(cross(axis,fabsf(axis.y)<0.9f?(Vec){0,1,0}:(Vec){1,0,0})),up=cross(right,axis);
     int sides=(int[]){6,8,12,4}[(synth.beam_style+(synth.seed>>4))%4];
     quantize_vertices=0;
@@ -836,7 +856,7 @@ static void render_scene(void) {
     }
     if(synth.world_mode==0) {
         projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE);
-        if(synth.gear==3 || synth.backdrop==2) dome();
+        if(synth.gear==3 || synth.backdrop==2) { dome(); projection(); }
         if(synth.backdrop==0 || synth.backdrop==2) swarm();
         if(synth.backdrop==1) warp_tunnel();
         if(synth.backdrop!=2) vector_tunnel();
@@ -848,7 +868,7 @@ static void render_scene(void) {
         (void)mega; (void)feedback_trail;
 #endif
     } else {
-        if(synth.world_mode!=3) feedback_trail();
+
         independent_world();
     }
     profile_mark(TIME_SCENE);
@@ -883,6 +903,16 @@ static void render(void) {
 #endif
 }
 
+static unsigned remote_keys(u32 buttons,int vertical) {
+    unsigned keys=0;
+    const u32 raw[]={WPAD_BUTTON_A,WPAD_BUTTON_B,WPAD_BUTTON_1,WPAD_BUTTON_2,WPAD_BUTTON_PLUS,WPAD_BUTTON_MINUS};
+    const unsigned key[]={KEY_A,KEY_B,KEY_ONE,KEY_TWO,KEY_PLUS,KEY_MINUS};
+    for(int i=0;i<6;i++) if(buttons&raw[i]) keys|=key[i];
+    const u32 arrows[]={WPAD_BUTTON_UP,WPAD_BUTTON_RIGHT,WPAD_BUTTON_DOWN,WPAD_BUTTON_LEFT};
+    const unsigned upright[]={KEY_UP,KEY_RIGHT,KEY_DOWN,KEY_LEFT},sideways[]={KEY_LEFT,KEY_UP,KEY_RIGHT,KEY_DOWN};
+    for(int i=0;i<4;i++) if(buttons&arrows[i]) keys|=vertical?upright[i]:sideways[i];
+    return keys;
+}
 int main(void) {
     VIDEO_Init(); WPAD_Init();
     SYS_SetPowerCallback(power); SYS_SetResetCallback(reset_button);
@@ -915,7 +945,7 @@ int main(void) {
     GX_SetNumChans(1); GX_SetNumTevStages(1);
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
     mesh_init();
-    dome_init();
+    dome_init(); indirect_init();
     master_init();
     GX_InitTexObj(&chrome_tex,chrome_pixels,128,128,GX_TF_RGB565,GX_CLAMP,GX_CLAMP,GX_FALSE);
     GX_InitTexObjLOD(&chrome_tex,GX_LINEAR,GX_LINEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
@@ -942,7 +972,7 @@ int main(void) {
     DCFlushRange(dither_pixels,sizeof(dither_pixels));
     GX_InitTexObj(&dither_tex,dither_pixels,8,8,GX_TF_I8,GX_REPEAT,GX_REPEAT,GX_FALSE);
     GX_InitTexObjLOD(&dither_tex,GX_NEAR,GX_NEAR,0,0,0,GX_FALSE,GX_FALSE,GX_ANISO_1);
-    WPAD_SetDataFormat(0,WPAD_FMT_BTNS_ACC);
+    WPAD_SetDataFormat(WPAD_CHAN_ALL,WPAD_FMT_BTNS_ACC);
     reset(&synth); make_metal();
     midi_start();
     GX_CopyDisp(fb[0],GX_TRUE); GX_DrawDone();
@@ -979,11 +1009,11 @@ int main(void) {
         }
         midi_action(&synth,&midi_input,8+stage%8,beat>=20 && beat<100);
 #elif defined(GEEZY_SCULPTURE_CHECK)
-        unsigned stage=(check_frame/120)%36,beat=check_frame%120;
+        unsigned stage=(check_frame/120)%56,beat=check_frame%120;
         down=held=0;
         if(beat==0) {
-            reset(&synth); check_sculpture=stage%9;
-            synth.skin=stage/9; synth.layout=stage%4; synth.backdrop=stage%4;
+            reset(&synth); check_sculpture=stage%14;
+            synth.skin=stage/14; synth.layout=stage%4; synth.backdrop=stage%4;
             synth.gear=stage%4; synth.seed=7+stage*7919; make_metal();
             if(stage%3==0) hit(&synth,1.5f);
         }
@@ -1041,21 +1071,19 @@ int main(void) {
             stick_x=mag*sinf(angle); stick_y=mag*cosf(angle);
         }
 #endif
-        unsigned keys=0;
-        if(held&WPAD_BUTTON_A) keys|=KEY_A;
-        if(held&WPAD_BUTTON_B) keys|=KEY_B;
-        if(held&WPAD_BUTTON_1) keys|=KEY_ONE;
-        if(held&WPAD_BUTTON_2) keys|=KEY_TWO;
-        if(held&WPAD_BUTTON_RIGHT) keys|=KEY_UP;
-        if(held&WPAD_BUTTON_DOWN) keys|=KEY_RIGHT;
-        if(held&WPAD_BUTTON_LEFT) keys|=KEY_DOWN;
-        if(held&WPAD_BUTTON_UP) keys|=KEY_LEFT;
-        if(held&WPAD_BUTTON_PLUS) keys|=KEY_PLUS;
-        if(held&WPAD_BUTTON_MINUS) keys|=KEY_MINUS;
-        int dirty=controls(&synth,keys);
+        unsigned held_right=0,down_right=0; int dual_connected=0;
+#ifndef GEEZY_VISUAL_CHECK
+        WPADData *right=WPAD_Data(1);
+        dual_connected=right->err==WPAD_ERR_NONE;
+        if(dual_connected) { held_right=WPAD_ButtonsHeld(1); down_right=WPAD_ButtonsDown(1); }
+#endif
+        if(down_right&WPAD_BUTTON_HOME) break;
+        unsigned keys=remote_keys(held,dual_connected),right_keys=remote_keys(held_right,1);
+        int dirty=dual_controls(&synth,&dual_input,right_keys,dual_connected);
+        dirty|=controls(&synth,keys);
         dirty|=classic_controls(&synth,classic,stick_x,stick_y);
         dirty|=midi_poll(&synth,&midi_input);
-        set_master_fx(&synth,remote_master_fx(keys)|classic_master_fx(classic)|midi_master_fx(&midi_input));
+        set_master_fx(&synth,remote_master_fx(keys)|classic_master_fx(classic)|midi_master_fx(&midi_input)|right_master_fx(right_keys));
         int midi_mask=midi_overlay(&midi_input);
         if(midi_mask>=0) synth.mask_pattern=midi_mask;
         int midi_boost=midi_steering(&synth,&midi_input);
@@ -1064,11 +1092,16 @@ int main(void) {
         int recovery=(keys&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS) || (classic&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS);
         if(!recovery) {
 #ifndef GEEZY_VISUAL_CHECK
-            WPADData *remote=WPAD_Data(0);
-            if(remote->err==WPAD_ERR_NONE && (remote->data_present&WPAD_DATA_ACCEL)) {
-                struct gforce_t gf; WPAD_GForce(0,&gf);
-                shake(&synth,sqrtf(gf.x*gf.x+gf.y*gf.y+gf.z*gf.z));
+            Vec forces[2]={{0,0,0},{0,0,0}}; int valid[2]={0,0};
+            int held_b[2]={!!(held&WPAD_BUTTON_B),!!(held_right&WPAD_BUTTON_B)};
+            for(int channel=0;channel<(dual_connected?2:1);channel++) {
+                WPADData *remote=WPAD_Data(channel);
+                if(remote->err==WPAD_ERR_NONE && (remote->data_present&WPAD_DATA_ACCEL)) {
+                    struct gforce_t gf; WPAD_GForce(channel,&gf);
+                    forces[channel]=(Vec){gf.x,gf.y,gf.z}; valid[channel]=1;
+                }
             }
+            if(remote_gestures(&synth,&dual_input,forces,valid,held_b,dt)) make_metal();
 #endif
             unsigned performance_keys=keys&~synth.remote_fx_latch,performance_classic=classic&~synth.classic_fx_latch;
             advance(&synth,dt,!!(performance_keys&KEY_A)||!!(performance_classic&CLASS_A)||midi_input.held[4],

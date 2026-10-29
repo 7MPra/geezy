@@ -57,17 +57,19 @@ static void mesh_init(void) {
 }
 static int mesh_fast(void) { return gpu_mesh_enabled && !quantize_vertices && synth.theme!=3; }
 static void list_draw(void *data,u32 bytes,Mtx model,Mtx rotation,int box_uv,u8 shade) {
-    Mtx mv,norm,uv,detail; guMtxConcat(view,model,mv); guMtxConcat(view,rotation,norm);
+    // Scalar concat avoids a NaN lane observed in the paired-single path with this build.
+    Mtx mv,norm,uv,detail; c_guMtxConcat(view,model,mv); c_guMtxConcat(view,rotation,norm);
     GX_LoadPosMtxImm(mv,GX_PNMTX0); GX_LoadNrmMtxImm(norm,GX_PNMTX0);
     guMtxIdentity(uv);
-    int explicit_uv=box_uv && (surface_kind==GRID || surface_kind==GHOST);
+    int explicit_uv=(box_uv && surface_kind==GRID) || (box_uv==1 && surface_kind==GHOST);
     if(explicit_uv) uv[1][3]=synth.draw.uv_shift*6;
     else {
         for(int j=0;j<3;j++) { uv[0][j]=norm[0][j]*0.48f; uv[1][j]=-norm[1][j]*0.48f; }
         uv[0][3]=0.5f; uv[1][3]=0.5f+(surface_kind==GRID?synth.draw.uv_shift*6:0);
     }
-    GX_LoadTexMtxImm(uv,GX_TEXMTX1,GX_MTX2x4);
-    GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,explicit_uv?GX_TG_TEX0:GX_TG_NRM,GX_TEXMTX1);
+    GX_LoadTexMtxImm(uv,GX_TEXMTX3,GX_MTX2x4);
+    GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,explicit_uv?GX_TG_TEX0:GX_TG_NRM,GX_TEXMTX3);
+    if(detail_kind) detail_uv(uv,explicit_uv?GX_TG_TEX0:GX_TG_NRM);
     if(surface_kind==GHOST) {
         guMtxCopy(uv,detail);
         for(int i=0;i<2;i++) for(int j=0;j<4;j++) detail[i][j]*=16;
@@ -84,6 +86,7 @@ static void list_draw(void *data,u32 bytes,Mtx model,Mtx rotation,int box_uv,u8 
     GX_SetChanCtrl(GX_COLOR0A0,GX_DISABLE,GX_SRC_REG,GX_SRC_VTX,0,GX_DF_NONE,GX_AF_NONE);
     GX_SetTexCoordGen(GX_TEXCOORD0,GX_TG_MTX2x4,GX_TG_TEX0,GX_IDENTITY);
     if(surface_kind==GHOST) GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX0,GX_TEXMTX0);
+    if(detail_kind) { Mtx base; guMtxIdentity(base); detail_uv(base,GX_TG_TEX0); }
     GX_LoadPosMtxImm(view,GX_PNMTX0);
 }
 static void rigid_matrix(Vec center,Vec size,float a,float b,Mtx model,Mtx rotation) {
@@ -108,6 +111,6 @@ static MeshList *mesh_lookup(MeshKey key) {
 }
 static void cached_mesh_draw(MeshList *slot,Vec center,float size,float a,float b) {
     Mtx model,rotation; rigid_matrix(center,(Vec){size,size,size},a,b,model,rotation);
-    list_draw(mesh_lists[slot-mesh_slots],slot->bytes,model,rotation,0,255);
+    list_draw(mesh_lists[slot-mesh_slots],slot->bytes,model,rotation,slot->key.type>=4?2:0,255);
 }
 #endif

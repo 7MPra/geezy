@@ -70,7 +70,7 @@ public static int NeonPixels(byte[] pixels) {
     if($window -eq [IntPtr]::Zero){throw 'Dolphin renderer not found'}
     Start-Sleep -Seconds 2
     $results=@()
-    $count=if($Master){8}elseif($Gpu){30}elseif($Worlds){156}elseif($Graphics -or $Sculptures){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
+    $count=if($Master){8}elseif($Gpu){45}elseif($Worlds){156}elseif($Sculptures){244}elseif($Graphics){156}elseif($Stencil){64}elseif($Trail){240}elseif($Checker){96}elseif($Lattice){64}else{26}
     $prefix=if($Master){'master'}elseif($Gpu){'gpu'}elseif($Worlds){'worlds'}elseif($Graphics){'graphics'}elseif($Stencil){'stencil'}elseif($Sculptures){'sculptures'}elseif($Trail){'trail'}elseif($Lattice){"lattice-$Beams"}elseif($Checker){'checker'}else{'render'}
     if($Profile){$prefix="profile-$prefix"}
     $timer=[Diagnostics.Stopwatch]::StartNew()

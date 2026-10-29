@@ -5,29 +5,33 @@
 static void world_projection(void) {
     in_3d=1; quantize_vertices=synth.slow;
     Mtx44 p; Mtx look,bank;
-    guVector eye={0,0,0},up={0,1,0},at;
+    Vec offset=hybrid_eye(&synth);
+    guVector eye={offset.x,offset.y,offset.z},up={0,1,0},at;
     float roll=flight_bank(&synth);
     if(synth.world_mode==4) {
-        // Fixed extents: neither depth nor charge FOV can change the projected scale.
-        guOrtho(p,11,-11,-11*aspect,11*aspect,0.2f,160);
+        // Orthographic throughout; dolly distance controls poster scale without perspective.
+        float extent=11*(0.75f+0.25f*synth.draw.radius/16);
+        guOrtho(p,extent,-extent,-extent*aspect,extent*aspect,0.2f,360);
         GX_LoadProjectionMtx(p,GX_ORTHOGRAPHIC);
-        eye.z=32; at=(guVector){synth.draw.aim_x*3,synth.draw.aim_y*3,0};
+        eye.z+=32; at=(guVector){synth.draw.aim_x*3,synth.draw.aim_y*3,0};
         roll=synth.draw.roll;
     } else {
         guPerspective(p,synth.draw.fov,aspect,0.2f,synth.world_mode==2?280:160);
         GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
-        Vec target=flight_target(&synth); at=(guVector){target.x,target.y,target.z};
+        Vec target=flight_target(&synth); at=(guVector){eye.x+target.x+0.25f*sinf(synth.draw.azimuth),eye.y+target.y+0.2f*sinf(synth.draw.elevation),eye.z+target.z};
         if(synth.world_mode==2) {
             AtriumCamera camera=atrium_camera(&synth);
-            eye=(guVector){camera.eye.x,camera.eye.y,camera.eye.z};
-            at=(guVector){camera.target.x,camera.target.y,camera.target.z}; roll=camera.roll;
+            eye=(guVector){camera.eye.x+offset.x,camera.eye.y+offset.y,camera.eye.z+offset.z};
+            at=(guVector){camera.target.x+offset.x+0.25f*sinf(synth.draw.azimuth),camera.target.y+offset.y+0.2f*sinf(synth.draw.elevation),camera.target.z+offset.z}; roll=camera.roll;
         }
     }
+    scene_eye=(Vec){eye.x,eye.y,eye.z};
     guLookAt(look,&eye,&up,&at);
-    guVector axis={0,0,1}; guMtxRotAxisDeg(bank,&axis,roll);
-    guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
+    float a=roll*0.0174532925f,c=cosf(a),sn=sinf(a);
+    guMtxIdentity(bank); bank[0][0]=bank[1][1]=c; bank[0][1]=-sn; bank[1][0]=sn;
+    c_guMtxConcat(bank,look,view); GX_LoadPosMtxImm(view,GX_PNMTX0);
     GX_SetFog(synth.world_mode==4?GX_FOG_ORTHO_LIN:GX_FOG_PERSP_LIN,
-        synth.world_mode==4?65:32,synth.world_mode==4?140:47,0.2f,160,clear_color());
+        synth.world_mode==4?65:32,synth.world_mode==4?140:47,0.2f,synth.world_mode==4?360:160,clear_color());
     if(synth.world_mode==2) {
         GXColor fog=synth.theme==1||synth.theme==3?clear_color():gx_color(palette.secondary);
         if(synth.theme==0 || synth.theme==2) { fog.r/=3; fog.g/=3; fog.b/=3; }
@@ -248,10 +252,11 @@ static void ortho_world(void) {
         world_surface(GRID,lane%3);
         beam((Vec){offset-16,-18,-12-lane*3},(Vec){offset+10,18,-12-lane*3},0.65f+lane*0.15f,255);
     }
+    swarm();
     primary_surface=1;
     for(int zone=0;zone<4;zone++) {
         Sculpture g=sculpture(synth.seed,synth.shape,zone);
-        g.family=(unsigned[]){4,5,6,7}[(zone+synth.layout)%4];
+        g.family=(g.family+zone+synth.layout)%14;
         float shift=wrap(cam.z/4+zone*6,24);
         Vec center={(zone%2?1:-1)*(8+2*sinf(phase*0.4f)),(zone<2?6:-6)+shift*0.22f,-zone*5};
         sculpture_draw(center,zone==0?1.8f:1.3f,phase*(zone%2?-1:1)+zone*0.7f,g);
@@ -263,14 +268,41 @@ static void ortho_world(void) {
         box((Vec){x,wrap(i*3-cam.y/4,24),5},(Vec){0.12f,3,0.3f},phase*0.2f,255);
     }
 }
+static void world_monuments(void) {
+    primary_surface=1;
+    if(synth.world_mode==3) {
+        sculpture_surface=synth.layout%2?2:1;
+        Sculpture g=sculpture(synth.seed,synth.shape,0);
+        sculpture_draw(cloud_focus(&synth),2.2f,synth.draw.phase,g);
+        sculpture_surface=0;
+    } else {
+        // Four repeating cells: cache reuse and conservative depth rejection bound the added load.
+        for(int i=0;i<4;i++) {
+            Vec c={world_cell(i*3+1,synth.draw.world_cam.x,8),
+                synth.world_mode==1?(i%2?23:-17):8+(i%2)*18,
+                world_cell(i*3+2,synth.draw.world_cam.z,8)};
+            if(synth.world_mode==2) c.y=world_cell(i*3+1,synth.draw.world_cam.y,8);
+            if(view_depth(c,view[2])>22) continue;
+            Sculpture g=sculpture(synth.seed,synth.shape,i+3);
+            if(synth.world_mode==2 && synth.layout==0) g.family=(unsigned[]){11,13,5,10}[(g.family+synth.layout)%4];
+            sculpture_draw(c,synth.world_mode==1?3.5f:3,synth.draw.phase*(i%2?-0.5f:0.5f),g);
+        }
+    }
+    primary_surface=0;
+}
 static void independent_world(void) {
     world_projection(); primary_surface=0; shell_surface=0;
+    if(synth.gear==3 || synth.backdrop==2) { dome(); world_projection(); }
+    if(synth.backdrop==1) warp_tunnel();
+    if(synth.backdrop!=2) vector_tunnel();
+    feedback_trail(); world_projection();
     switch(synth.world_mode) {
     case 1: horizon_world(); break;
     case 2: brutalist_world(); break;
     case 3: quantum_world(); break;
     case 4: ortho_world(); break;
     }
+    if(synth.world_mode!=4) world_monuments();
     primary_surface=0; shell_surface=0;
 }
 #endif

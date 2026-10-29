@@ -1,13 +1,19 @@
 #ifdef GEEZY_GPU_CHECK
-enum { GPU_CASES=324 };
+enum { GPU_CASES=404 };
 static void *gpu_pixels[2];
 static void gpu_case(int test,int fast) {
+    trail_valid=0;
     // New cases compare against stage 1; the original 104 still check the immediate reference.
-    gpu_mesh_enabled=test>=104?1:fast; gpu_stage2_enabled=fast; gpu_stage3_enabled=fast; primary_surface=0; shell_surface=0;
+    gpu_mesh_enabled=test>=104 && test<324?1:fast; gpu_stage2_enabled=fast; gpu_stage3_enabled=fast; primary_surface=0; shell_surface=0;
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
     ortho(); material(NULL); tint=clear_color();
     if(synth.slow) tint=strobe_lit(&synth)?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
     mask_rect(-1,-1,2,2);
+    if(test>=324) {
+        projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE); primary_surface=1;
+        Sculpture g=sculpture(7,0,0); g.family=9+(test-324)%5;
+        sculpture_draw((Vec){0,0,0},2.2f,0.43f,g); primary_surface=0; return;
+    }
     if(test>=276) { trail_valid=0; render_scene(); return; }
     if(test>=212) {
         projection(); GX_SetZMode(GX_TRUE,GX_LEQUAL,GX_TRUE); primary_surface=1;
@@ -92,6 +98,10 @@ static void gpu_check(void) {
                 synth.slow=n>=24; synth.tension=synth.slow?0.7f:0;
                 synth.live.fov=n>=24?125:55; synth.live.roll=n%2?60:-50;
                 synth.live.aim_x=n%2?0.35f:-0.35f; synth.live.aim_y=n%2?-0.3f:0.3f;
+            }
+            if(test>=324) {
+                n=test-324; synth.world_mode=0; synth.theme=n/20; synth.skin=(n/5)%4;
+                synth.slow=0; synth.tension=0; synth.live.fov=80; synth.live.aim_x=synth.live.aim_y=0; synth.live.roll=11;
             }
             synth.hud_visible=0; sample_pose(&synth); make_metal();
         }

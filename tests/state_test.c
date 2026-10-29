@@ -449,9 +449,9 @@ int main(void) {
         Sculpture g=sculpture(seed,seed%5,seed%3);
         families|=1u<<g.family;
         pairs|=1u<<(g.p==2?(g.q==3?0:3):(g.q==4?1:2));
-        assert(g.family<9 && g.slices>=8 && g.slices<=12 && g.rings>=3 && g.rings<=5);
+        assert(g.family<14 && g.slices>=8 && g.slices<=12 && g.rings>=3 && g.rings<=5);
         assert(g.sides==4 || g.sides==8 || g.sides==12);
-        uint32_t signature=g.family+9*(g.p+4*(g.q+6*(g.slices+13*(g.rings+6*(g.sides+13*(g.profile+3*g.glyph))))));
+        uint32_t signature=g.family+14*(g.p+4*(g.q+6*(g.slices+13*(g.rings+6*(g.sides+13*(g.profile+3*g.glyph))))));
         unsigned found=0; for(unsigned j=0;j<unique;j++) if(signatures[j]==signature) found=1;
         if(!found) signatures[unique++]=signature;
         Vec a=knot_center(0,g.p,g.q),b=knot_center(6.2831853f,g.p,g.q),n,v;
@@ -465,7 +465,7 @@ int main(void) {
             assert(isfinite(r) && r>=0.45f && r<=1.5f);
         }
     }
-    assert(families==511 && pairs==15 && unique>400);
+    assert(families==16383 && pairs==15 && unique>400);
     for(unsigned ring=0;ring<24;ring++) for(int i=0;i<400;i++) {
         float a=tunnel_depth(ring,i*0.5f),b=tunnel_depth(ring,(i+1)*0.5f);
         assert(closef(wrap(b-a,192),-0.5f));

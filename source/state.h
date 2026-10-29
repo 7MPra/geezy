@@ -14,6 +14,7 @@ typedef struct {
     Vec velocity, flow, stutter_flow;
     float spin_velocity, burst_velocity, accumulator, target_fov, target_roll, target_aim_x, target_aim_y;
     float target_azimuth, target_elevation, azimuth_velocity, elevation_velocity, roll_velocity;
+    float wrist_target,wrist;
     float bank, tension, overdrive, boost, mask_env, motion_phase, grid_distance;
     unsigned palette_count, tick, sample_tick, shake_cooldown, stutter_tick, grid_tick;
     int focus_index, shape, motion_mode, gear, grid_axis, cut, mask_pattern, slow, frequency, shake_ready;
@@ -242,7 +243,7 @@ static inline void update_rig(Synth *s) {
     s->live.elevation=spring(s->live.elevation,s->target_elevation,&s->elevation_velocity);
     s->live.elevation=fmaxf(-1.3f,fminf(1.3f,s->live.elevation));
     float roll=s->live.roll*0.0174532925f;
-    roll=spring(roll,(s->target_roll+s->bank)*0.0174532925f,&s->roll_velocity);
+    roll=spring(roll,(s->target_roll+s->bank+s->wrist*38)*0.0174532925f,&s->roll_velocity);
     s->live.roll=roll*57.2957795f;
     s->live.radius=dolly_radius(s->live.fov);
 }
@@ -264,12 +265,13 @@ static inline void advance(Synth *s,float dt,int slow,int boosting,int accent) {
     s->slow=slow;
     while(s->accumulator>=1.0f/60) {
         s->accumulator-=1.0f/60; s->tick++; s->sample_tick++;
+        s->wrist+=(s->wrist_target-s->wrist)*0.18f;
         s->boost+=((boosting?5.0f:1.0f)-s->boost)*(boosting?0.08f:0.12f);
         if(slow) s->tension=clamp01(s->tension+1.0f/120);
         if(!slow) {
             float whip=s->motion_mode==3?0.2f*sinf(s->motion_phase*2):0;
             float reach=boosting?(accent?2.0f:0.85f):0;
-            float aim=fmaxf(-1.6f,fminf(1.6f,s->target_aim_x+whip+s->flow.x*reach+(s->layout==1?0.3f:0)));
+            float aim=fmaxf(-1.6f,fminf(1.6f,s->target_aim_x+s->wrist*0.35f+whip+s->flow.x*reach+(s->layout==1?0.3f:0)));
             float aim_y=fmaxf(-1.6f,fminf(1.6f,s->target_aim_y+s->flow.y*reach));
             s->live.fov+=(s->target_fov-s->live.fov)*0.28f;
 
