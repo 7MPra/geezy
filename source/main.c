@@ -1079,17 +1079,18 @@ int main(void) {
 #endif
         if(down_right&WPAD_BUTTON_HOME) break;
         unsigned keys=remote_keys(held,dual_connected),right_keys=remote_keys(held_right,1);
-        int dirty=dual_controls(&synth,&dual_input,right_keys,dual_connected);
-        dirty|=controls(&synth,keys);
+        int dirty=dual_controls(&synth,&dual_input,keys,right_keys,dual_connected);
+        if(!dual_connected) dirty|=controls(&synth,keys);
         dirty|=classic_controls(&synth,classic,stick_x,stick_y);
         dirty|=midi_poll(&synth,&midi_input);
-        set_master_fx(&synth,remote_master_fx(keys)|classic_master_fx(classic)|midi_master_fx(&midi_input)|right_master_fx(right_keys));
+        set_master_fx(&synth,(dual_connected?dual_input.fx:remote_master_fx(keys))|classic_master_fx(classic)|midi_master_fx(&midi_input));
         int midi_mask=midi_overlay(&midi_input);
         if(midi_mask>=0) synth.mask_pattern=midi_mask;
         int midi_boost=midi_steering(&synth,&midi_input);
         int classic_boost=stick_x*stick_x+stick_y*stick_y>0.04f;
         if(dirty) make_metal();
-        int recovery=(keys&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS) || (classic&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS);
+        int recovery=(dual_connected?((keys&KEY_MINUS)&&(right_keys&KEY_MINUS)):
+            (keys&(KEY_PLUS|KEY_MINUS))==(KEY_PLUS|KEY_MINUS)) || (classic&(CLASS_PLUS|CLASS_MINUS))==(CLASS_PLUS|CLASS_MINUS);
         if(!recovery) {
 #ifndef GEEZY_VISUAL_CHECK
             Vec forces[2]={{0,0,0},{0,0,0}}; int valid[2]={0,0};
@@ -1103,9 +1104,11 @@ int main(void) {
             }
             if(remote_gestures(&synth,&dual_input,forces,valid,held_b,dt)) make_metal();
 #endif
-            unsigned performance_keys=keys&~synth.remote_fx_latch,performance_classic=classic&~synth.classic_fx_latch;
+            unsigned performance_keys=dual_connected?dual_input.performance:keys&~synth.remote_fx_latch;
+            unsigned performance_classic=classic&~synth.classic_fx_latch;
             advance(&synth,dt,!!(performance_keys&KEY_A)||!!(performance_classic&CLASS_A)||midi_input.held[4],
-                steering_buttons(performance_keys)||classic_boost||midi_boost,!!(performance_keys&KEY_B)||!!(performance_classic&CLASS_B)||midi_mask>=0);
+                (dual_connected?!!(performance_keys&KEY_ARROWS):steering_buttons(performance_keys))||classic_boost||midi_boost,
+                !!(performance_keys&KEY_B)||!!(performance_classic&CLASS_B)||midi_mask>=0);
         }
         profile_mark(TIME_INPUT);
         GX_SetColorUpdate(GX_TRUE); GX_InvalidateTexAll(); render();

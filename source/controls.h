@@ -179,44 +179,100 @@ static inline int controls(Synth *s,unsigned held) {
     if(down&KEY_MINUS) change_gear(s,-1);
     return dirty;
 }
-// The second remote owns action buttons; its FX chords consume their keys until release.
+// Dual-hand chords use B+A/arrows locally, or one modifier on the other hand.
 typedef struct {
-    unsigned held,latch;
+    unsigned held[2],latch[2],pending[2],performance,fx;
     int connected,ready[2];
     float cooldown[2],window[2];
 } DualInput;
-static inline unsigned right_master_fx(unsigned held) {
-    if(!(held&KEY_B)) return 0;
+static inline unsigned dual_master_fx(unsigned left,unsigned right) {
     unsigned fx=0;
-    if(held&KEY_UP) fx|=FX_KALEIDO_4;
-    if(held&KEY_RIGHT) fx|=FX_MIRROR_X;
-    if(held&KEY_DOWN) fx|=FX_FREEZE;
-    if(held&KEY_LEFT) fx|=FX_INVERT;
-    if(held&KEY_ONE) fx|=FX_MOSAIC;
-    if(held&KEY_TWO) fx|=FX_STROBE_KILL;
-    if(held&KEY_MINUS) fx|=FX_BLACKOUT;
-    if(held&KEY_PLUS) fx|=FX_WHITEOUT;
-    return fx?fx:FX_KALEIDO_4;
+    if(right&KEY_B) {
+        if(right&KEY_UP) fx|=FX_KALEIDO_4;
+        if(right&KEY_RIGHT) fx|=FX_MIRROR_X;
+        if(right&KEY_DOWN) fx|=FX_FREEZE;
+        if(right&KEY_LEFT) fx|=FX_INVERT;
+        if(right&KEY_A) fx|=FX_MOSAIC;
+        if(!fx) fx=FX_KALEIDO_4;
+    }
+    if(left&KEY_B) {
+        if(right&KEY_ONE) fx|=FX_BLACKOUT;
+        if(right&KEY_TWO) fx|=FX_WHITEOUT;
+        if(right&KEY_PLUS) fx|=FX_STROBE_KILL;
+    }
+    return fx;
 }
-static inline int dual_controls(Synth *s,DualInput *input,unsigned held,int connected) {
+static inline int dual_controls(Synth *s,DualInput *input,unsigned left,unsigned right,int connected) {
     if(connected!=input->connected) {
         *input=(DualInput){.connected=connected,.ready={1,1}};
         s->held_buttons=s->pending_taps=s->remix_pending=s->remote_fx_latch=0;
     }
     if(!connected) return 0;
-    unsigned down=held&~input->held; input->held=held; input->latch&=held;
-    if(held&KEY_B) input->latch|=held&(KEY_ARROWS|KEY_MODS|KEY_PLUS|KEY_MINUS);
-    down&=~input->latch;
+    unsigned held[2]={left,right},down[2],up[2];
+    for(int h=0;h<2;h++) {
+        down[h]=held[h]&~input->held[h]; up[h]=input->held[h]&~held[h];
+        input->held[h]=held[h]; input->latch[h]&=held[h];
+        input->pending[h]|=down[h]&KEY_MODS;
+    }
     int dirty=0;
-    if(down&KEY_A) camera_cut(s);
-    if(down&KEY_UP) next_scene(s);
-    if(down&KEY_RIGHT) { palette_next(s); dirty=1; }
-    if(down&KEY_DOWN) s->motion_mode=(s->motion_mode+1)%4;
-    if(down&KEY_LEFT) s->layout=(s->layout+1)%4;
-    if(down&KEY_PLUS) change_gear(s,1);
-    if(down&KEY_MINUS) change_gear(s,-1);
-    if(down&KEY_ONE) s->world_mode=(s->world_mode+1)%5;
-    if(down&KEY_TWO) { s->theme=(s->theme+1)%4; dirty=1; }
+    const unsigned arrows[4]={KEY_UP,KEY_RIGHT,KEY_DOWN,KEY_LEFT};
+    if(left&KEY_B) {
+        input->latch[0]|=left&(KEY_ARROWS|KEY_A);
+        input->latch[1]|=right&(KEY_ONE|KEY_TWO|KEY_PLUS);
+        for(int i=0;i<4;i++) if((left&arrows[i]) && (down[0]&(KEY_B|arrows[i]))) {
+            s->backdrop=i==3?0:i;
+            if(i==0 || i==3) s->beam_style=i;
+        }
+        if((left&KEY_A) && (down[0]&(KEY_B|KEY_A))) s->mask_pattern=(s->mask_pattern+1)%8;
+        else if(down[0]&KEY_B) s->mask_pattern=(s->mask_pattern+1)%8;
+    }
+    if(right&KEY_B) input->latch[1]|=right&(KEY_ARROWS|KEY_A);
+    // Each modifier lives on the opposite hand from its command button.
+    for(int h=0;h<2;h++) {
+        int other=1-h;
+        unsigned mod=held[h]&KEY_MODS;
+        if((mod!=KEY_ONE && mod!=KEY_TWO) || (held[0]&KEY_B) || (held[1]&KEY_B)) continue;
+        unsigned command=held[other]&(KEY_ARROWS|KEY_A);
+        if(!command) continue;
+        input->latch[h]|=mod; input->latch[other]|=command;
+        for(int i=0;i<4;i++) if((command&arrows[i]) && ((down[h]&mod)||(down[other]&arrows[i]))) {
+            if(h==0 && mod==KEY_ONE) { s->beam_style=i; s->backdrop=0; }
+            else if(h==0) s->skin=i;
+            else if(mod==KEY_ONE) s->backdrop=i;
+            else { s->reflection=i; dirty=1; }
+        }
+        if((command&KEY_A) && ((down[h]&mod)||(down[other]&KEY_A))) {
+            if(h==0 && mod==KEY_ONE) { remix(s); dirty=1; }
+            else if(h==0) { harmony_bank(s,(s->palette_bank+1)%16); dirty=1; }
+            else if(mod==KEY_ONE) s->hud_visible=!s->hud_visible;
+            else s->mask_pattern=(s->mask_pattern+1)%8;
+        }
+    }
+    if((left&KEY_MINUS) && (right&KEY_MINUS)) {
+        if((down[0]|down[1])&KEY_MINUS) { reset(s); dirty=1; }
+        input->latch[0]|=KEY_MINUS; input->latch[1]|=KEY_MINUS;
+    }
+    for(int h=0;h<2;h++) {
+        input->pending[h]&=~input->latch[h];
+        unsigned taps=up[h]&input->pending[h]; input->pending[h]&=~up[h];
+        if(taps&KEY_ONE) { if(h==0) { palette_next(s); dirty=1; } else s->world_mode=(s->world_mode+1)%5; }
+        if(taps&KEY_TWO) { if(h==0) s->shape=(s->shape+1)%5; else { s->theme=(s->theme+1)%4; dirty=1; } }
+        down[h]&=~input->latch[h];
+        if(down[h]&KEY_PLUS) change_gear(s,1);
+        if(down[h]&KEY_MINUS) change_gear(s,-1);
+    }
+    if(down[1]&KEY_A) camera_cut(s);
+    if(down[1]&KEY_UP) s->shape=(s->shape+1)%5;
+    if(down[1]&KEY_RIGHT) { palette_next(s); dirty=1; }
+    if(down[1]&KEY_DOWN) { s->motion_mode=(s->motion_mode+1)%4; s->motion_phase=s->grid_distance=0; s->grid_tick=0; s->grid_axis=2; }
+    if(down[1]&KEY_LEFT) s->layout=(s->layout+1)%4;
+    input->performance=left&~input->latch[0];
+    if(input->performance&KEY_ARROWS) {
+        steer(s,!!(input->performance&KEY_RIGHT)-!!(input->performance&KEY_LEFT),
+                !!(input->performance&KEY_UP)-!!(input->performance&KEY_DOWN));
+        if(down[0]&KEY_ARROWS) hit(s,1);
+    }
+    input->fx=dual_master_fx(left,right);
     return dirty;
 }
 static inline int remote_gestures(Synth *s,DualInput *input,const Vec gf[2],const int valid[2],
