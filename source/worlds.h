@@ -3,7 +3,7 @@
 #include "world_math.h"
 
 static void world_projection(void) {
-    in_3d=1; quantize_vertices=synth.slow;
+    quantize_vertices=synth.slow;
     Mtx44 p; Mtx look,bank;
     Vec offset=hybrid_eye(&synth);
     guVector eye={offset.x,offset.y,offset.z},up={0,1,0},at;
@@ -33,7 +33,7 @@ static void world_projection(void) {
     GX_SetFog(synth.world_mode==4?GX_FOG_ORTHO_LIN:GX_FOG_PERSP_LIN,
         synth.world_mode==4?65:32,synth.world_mode==4?140:47,0.2f,synth.world_mode==4?360:160,clear_color());
     if(synth.world_mode==2) {
-        GXColor fog=synth.theme==1||synth.theme==3?clear_color():gx_color(palette.secondary);
+        GXColor fog=synth.theme==1?clear_color():gx_color(palette.secondary);
         if(synth.theme==0 || synth.theme==2) { fog.r/=3; fog.g/=3; fog.b/=3; }
         if(synth.slow) fog=strobe_lit(&synth)?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
         GX_SetFog(GX_FOG_PERSP_LIN,28,145,0.2f,280,fog);
@@ -87,7 +87,7 @@ static void horizon_world(void) {
 static void atrium_light(Vec center,uint32_t h) {
     Vec a=add(center,(Vec){-7,39,-5}),b=add(center,(Vec){8,-26,5});
     world_surface(SOLID,h%2?2:0);
-    if(!synth.slow && synth.theme!=3 && h%3==0) tint=(GXColor){255,255,255,255};
+    if(!synth.slow && h%3==0) tint=(GXColor){255,255,255,255};
     beam(a,b,0.10f,255);
     // Parallel rays imply a light volume without translucent gray accumulation.
     GX_SetLineWidth(6,GX_TO_ZERO); begin_3d(GX_LINES,32);

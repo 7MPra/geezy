@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdint.h>
 typedef struct { float x,y,z; } Vec;
+enum { THEME_COUNT=3 };
 enum { FX_BLACKOUT=1,FX_WHITEOUT=2,FX_FREEZE=4,FX_MIRROR_X=8,FX_KALEIDO_4=16,
        FX_INVERT=32,FX_MOSAIC=64,FX_STROBE_KILL=128 };
 typedef struct {

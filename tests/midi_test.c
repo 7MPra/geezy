@@ -47,9 +47,9 @@ int main(void) {
         assert(midi_action(&s,&input,61,1)); midi_action(&s,&input,61,0);
         midi_action(&s,&input,62,1); midi_action(&s,&input,62,0);
         assert(midi_action(&s,&input,63,1)); midi_action(&s,&input,63,0);
-        assert(s.theme==(theme+1)%4 && s.skin==(skin+1)%4 && s.reflection==(reflection+1)%4 && s.world_mode==4);
+        assert(s.theme==(theme+1)%THEME_COUNT && s.skin==(skin+1)%4 && s.reflection==(reflection+1)%4 && s.world_mode==4);
     }
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<THEME_COUNT;i++) {
         midi_action(&s,&input,64+i,1); midi_action(&s,&input,64+i,0);
         assert(s.theme==i && s.skin==0 && s.reflection==0 && s.world_mode==4);
     }
@@ -68,7 +68,7 @@ int main(void) {
         int dirty=midi_action(&s,&input,n,1); (void)dirty;
         Synth before=s; assert(!midi_action(&s,&input,n,1)); assert(memcmp(&s,&before,sizeof(s))==0);
         midi_action(&s,&input,n,0);
-        assert(s.theme<4 && s.harmony_mode<4 && s.mask_pattern<8 && s.layout<4 && s.gear<4 && s.shape<5);
+        assert(s.theme<THEME_COUNT && s.harmony_mode<4 && s.mask_pattern<8 && s.layout<4 && s.gear<4 && s.shape<5);
     }
     for(int bank=0;bank<16;bank++) {
         midi_action(&s,&input,16+bank,1); midi_action(&s,&input,16+bank,0);
@@ -115,7 +115,29 @@ int main(void) {
         worlds|=1u<<s.world_mode;
         assert(!s.hud_visible && s.gear==3 && s.bank_seed[s.palette_bank]==s.seed);
     }
-    assert(themes==15 && harmonies==15 && worlds==31);
+    assert(themes==7 && harmonies==15 && worlds==31);
+    // Retired APC pad (including MK2 note 103) and preset shortcuts cannot alter the scene.
+    for(int theme=0;theme<THEME_COUNT;theme++) {
+        reset(&s); s.theme=theme; s.skin=2; s.reflection=2;
+        Synth before=s; uint8_t lights[90];
+        for(int mk2=0;mk2<2;mk2++) {
+            int retired=midi_normal_note(mk2?103:67,mk2);
+            assert(!midi_action(&s,&input,retired,1)); midi_leds(&s,&input,lights);
+            assert(lights[67]==0 && lights[64+theme]==1);
+            midi_action(&s,&input,retired,0);
+            assert(memcmp(&before,&s,sizeof(s))==0);
+        }
+        theme_preset(&s,3); theme_preset(&s,7);
+        assert(memcmp(&before,&s,sizeof(s))==0);
+    }
+    // Every live theme cycle wraps from 2 to 0; material/reflection choices retain four states.
+    reset(&s); DualInput dual={0};
+    for(int i=0;i<12;i++) {
+        s.theme=2; controls(&s,KEY_TWO|KEY_PLUS); controls(&s,0); assert(s.theme==0);
+        s.theme=2; classic_controls(&s,CLASS_ZL,0,0); classic_controls(&s,0,0,0); assert(s.theme==0);
+        s.theme=2; dual_controls(&s,&dual,0,KEY_TWO,1); dual_controls(&s,&dual,0,0,1); assert(s.theme==0);
+        s.theme=2; midi_action(&s,&input,61,1); midi_action(&s,&input,61,0); assert(s.theme==0);
+    }
     palette_next(&s); assert(s.bank_seed[s.palette_bank]==s.seed);
     // Deterministic malformed descriptors and arbitrary USB packets must remain bounded.
     uint32_t random=7; uint8_t bytes[128];

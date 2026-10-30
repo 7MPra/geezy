@@ -19,13 +19,14 @@ static inline void remix(Synth *s) {
     s->shape=(recipe>>1)%5; s->skin=(recipe>>5)&3; s->layout=(recipe>>8)&3;
     s->backdrop=(recipe>>12)&3; s->reflection=(recipe>>16)&3;
     s->beam_style=(recipe>>28)&3;
-    s->theme=(recipe>>6)&3; s->palette_bank=(recipe>>10)&15;
+    s->theme=(recipe>>6)%THEME_COUNT; s->palette_bank=(recipe>>10)&15;
     s->harmony_mode=s->palette_bank/4; s->bank_seed[s->palette_bank]=s->seed;
     s->motion_mode=(recipe>>20)&3; s->mask_pattern=(recipe>>24)%8;
     s->motion_phase=s->grid_distance=0; s->grid_tick=0;
     hit(s,1.2f);
 }
 static inline void theme_preset(Synth *s,int preset) {
+    if(preset%4>=THEME_COUNT) return;
     s->theme=preset%4;
     s->skin=preset<4?0:(int[]){3,2,1,0}[preset-4];
     s->reflection=preset<4?0:(int[]){2,3,0,1}[preset-4];
@@ -77,7 +78,7 @@ static inline int classic_controls(Synth *s,unsigned held,float x,float y) {
         else { if(held&CLASS_R) s->motion_mode=(s->motion_mode+1)%4; else next_scene(s); hit(s,1); }
     }
     if(down&CLASS_B) s->mask_pattern=(s->mask_pattern+1)%8;
-    if((down&CLASS_ZL) && !(held&CLASS_R)) { s->theme=(s->theme+1)%4; dirty=1; }
+    if((down&CLASS_ZL) && !(held&CLASS_R)) { s->theme=(s->theme+1)%THEME_COUNT; dirty=1; }
     if(down&CLASS_PLUS) { if(held&CLASS_L) s->hud_visible=!s->hud_visible; else change_gear(s,1); }
     if(down&CLASS_MINUS) change_gear(s,-1);
     const unsigned arrows[4]={CLASS_UP,CLASS_RIGHT,CLASS_DOWN,CLASS_LEFT};
@@ -116,7 +117,7 @@ static inline int controls(Synth *s,unsigned held) {
     }
     if((held&(KEY_TWO|KEY_PLUS))==(KEY_TWO|KEY_PLUS)) {
         s->pending_taps&=~KEY_TWO; s->remix_pending=0;
-        if(down&(KEY_TWO|KEY_PLUS)) { s->theme=(s->theme+1)%4; return 1; }
+        if(down&(KEY_TWO|KEY_PLUS)) { s->theme=(s->theme+1)%THEME_COUNT; return 1; }
         return 0;
     }
     if((held&(KEY_ONE|KEY_MINUS))==(KEY_ONE|KEY_MINUS)) {
@@ -256,7 +257,7 @@ static inline int dual_controls(Synth *s,DualInput *input,unsigned left,unsigned
         input->pending[h]&=~input->latch[h];
         unsigned taps=up[h]&input->pending[h]; input->pending[h]&=~up[h];
         if(taps&KEY_ONE) { if(h==0) { palette_next(s); dirty=1; } else s->world_mode=(s->world_mode+1)%5; }
-        if(taps&KEY_TWO) { if(h==0) s->shape=(s->shape+1)%5; else { s->theme=(s->theme+1)%4; dirty=1; } }
+        if(taps&KEY_TWO) { if(h==0) s->shape=(s->shape+1)%5; else { s->theme=(s->theme+1)%THEME_COUNT; dirty=1; } }
         down[h]&=~input->latch[h];
         if(down[h]&KEY_PLUS) change_gear(s,1);
         if(down[h]&KEY_MINUS) change_gear(s,-1);

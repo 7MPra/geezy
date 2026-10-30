@@ -38,7 +38,7 @@ static int freeze_valid;
 static unsigned master_scene_calls,master_copy_calls;
 #endif
 static int trail_valid, shell_surface;
-static int quantize_vertices, in_3d;
+static int quantize_vertices;
 static float aspect;
 static Mtx view;
 static Vec scene_eye;
@@ -54,7 +54,7 @@ static u16 rgb565(float r,float g,float b) {
 static GXColor gx_color(ChromeColor c) { return (GXColor){clamp01(c.r)*255,clamp01(c.g)*255,clamp01(c.b)*255,255}; }
 static ChromeColor palette_role(int role) { role=(role%3+3)%3; return role==0?palette.primary:role==1?palette.secondary:palette.accent; }
 static GXColor clear_color(void) {
-    if(synth.theme==1 || synth.theme==3) return (GXColor){255,255,255,255};
+    if(synth.theme==1) return (GXColor){255,255,255,255};
     return synth.theme==2?gx_color(palette.bg_tint):(GXColor){0,0,0,255};
 }
 static void make_metal(void) {
@@ -120,11 +120,10 @@ static void surface(int kind) {
         tint=white?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
         return;
     }
-    if(synth.theme==3 && kind!=MATTE) { material(NULL); tint=gx_color(primary_surface?palette.primary:palette.secondary); }
-    if((kind==CHROME || kind==GRID) && synth.theme!=3) detail_material(kind);
-    if(kind==GHOST || synth.theme==3) {
+    if(kind==CHROME || kind==GRID) detail_material(kind);
+    if(kind==GHOST) {
         GX_SetNumTevStages(2); GX_SetNumTexGens(2);
-        Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=synth.theme==3?1:16;
+        Mtx uv; guMtxIdentity(uv); uv[0][0]=uv[1][1]=16;
         GX_LoadTexMtxImm(uv,GX_TEXMTX0,GX_MTX2x4);
         GX_SetTexCoordGen(GX_TEXCOORD1,GX_TG_MTX2x4,GX_TG_TEX0,GX_TEXMTX0);
         GX_LoadTexObj(&dither_tex,GX_TEXMAP1);
@@ -137,7 +136,6 @@ static void surface(int kind) {
 }
 static void vertex(Vec p,float u,float v,u8 shade,u8 alpha) {
     if(quantize_vertices) p=(Vec){snap_vertex(p.x),snap_vertex(p.y),snap_vertex(p.z)};
-    if(in_3d && synth.theme==3) { u=(p.x+p.z*0.37f)*4; v=(p.y+p.z*0.61f)*4; }
     GX_Position3f32(p.x,p.y,p.z); GX_Color4u8(shade*tint.r/255,shade*tint.g/255,shade*tint.b/255,alpha); GX_TexCoord2f32(u,v);
 }
 static void normal_vertex(Vec p,Vec n,u8 shade) {
@@ -221,7 +219,7 @@ static void beam(Vec a,Vec b,float width,u8 shade) {
     box_vertices(p,shade);
 }
 static void ortho(void) {
-    in_3d=0; quantize_vertices=0; GX_SetFog(GX_FOG_NONE,0,1,0,1,(GXColor){0,0,0,255});
+    quantize_vertices=0; GX_SetFog(GX_FOG_NONE,0,1,0,1,(GXColor){0,0,0,255});
     Mtx m; Mtx44 p; guMtxIdentity(m); GX_LoadPosMtxImm(m,GX_PNMTX0);
     guOrtho(p,1,-1,-1,1,0,10); GX_LoadProjectionMtx(p,GX_ORTHOGRAPHIC);
     GX_SetZMode(GX_FALSE,GX_ALWAYS,GX_FALSE);
@@ -272,7 +270,7 @@ static void feedback_trail(void) {
     GX_End(); GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
 }
 static void projection(void) {
-    in_3d=1; quantize_vertices=synth.slow;
+    quantize_vertices=synth.slow;
     GX_SetFog(synth.theme==1||synth.theme==2?GX_FOG_PERSP_LIN:GX_FOG_NONE,32,110,0.2f,220,clear_color());
     Mtx44 p; guPerspective(p,synth.draw.fov,aspect,0.2f,220);
     GX_LoadProjectionMtx(p,GX_PERSPECTIVE);
@@ -781,8 +779,8 @@ static void small_text(const char *text,float x,float y) {
 static void telemetry(void) {
     ortho(); material(NULL); GX_SetNumTevStages(1); GX_SetTevOp(GX_TEVSTAGE0,GX_PASSCLR);
     GX_SetBlendMode(GX_BM_NONE,GX_BL_ONE,GX_BL_ZERO,GX_LO_COPY);
-    tint=synth.theme==1||synth.theme==3?(GXColor){0,0,0,255}:(GXColor){255,255,255,255};
-    GXColor ink=tint; tint=synth.theme==1||synth.theme==3?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
+    tint=synth.theme==1?(GXColor){0,0,0,255}:(GXColor){255,255,255,255};
+    GXColor ink=tint; tint=synth.theme==1?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
     mask_rect(-0.97f,0.66f,0.76f,0.31f); mask_rect(0.15f,0.66f,0.82f,0.31f);
     mask_rect(-0.97f,-0.94f,0.9f,0.14f); mask_rect(0.63f,-0.94f,0.34f,0.14f); tint=ink;
     char text[40];
@@ -800,7 +798,7 @@ static void telemetry(void) {
         snprintf(text,sizeof(text),"%03.0f%%",synth.tension*100); small_text(text,0.94f-strlen(text)*0.048f,-0.82f);
     }
 #ifdef GEEZY_PROFILE
-    tint=synth.theme==1||synth.theme==3?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
+    tint=synth.theme==1?(GXColor){255,255,255,255}:(GXColor){0,0,0,255};
     mask_rect(-0.97f,-0.75f,1.94f,0.42f); tint=ink;
     float *ms=profile_stats.ms;
     snprintf(text,sizeof(text),"HZ:%.1f CPU:%.1f WAIT:%.1f",profile_stats.interval_ms>0?1000/profile_stats.interval_ms:0,
@@ -987,7 +985,7 @@ int main(void) {
         WPAD_ScanPads(); u32 down=WPAD_ButtonsDown(0),held=WPAD_ButtonsHeld(0);
 #ifdef GEEZY_VISUAL_CHECK
 #if defined(GEEZY_WORLDS_CHECK)
-        unsigned stage=(check_frame/180)%20,beat=check_frame%180;
+        unsigned stage=(check_frame/180)%(5*THEME_COUNT),beat=check_frame%180;
         down=held=0;
         if(beat==0) {
             reset(&synth); memset(&midi_input,0,sizeof(midi_input));
@@ -1000,7 +998,7 @@ int main(void) {
         if(beat>=60 && beat<125) held=WPAD_BUTTON_A;
         if(beat>=145 && beat<170) { synth.mask_pattern=2+stage%2; held=WPAD_BUTTON_B; }
 #elif defined(GEEZY_GRAPHICS_CHECK)
-        unsigned stage=(check_frame/120)%32,beat=check_frame%120;
+        unsigned stage=(check_frame/120)%(8*THEME_COUNT),beat=check_frame%120;
         down=held=0;
         if(beat==0) {
             reset(&synth); memset(&midi_input,0,sizeof(midi_input));

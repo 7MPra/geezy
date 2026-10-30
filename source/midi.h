@@ -58,7 +58,8 @@ static inline int midi_action(Synth *s,MidiInput *input,int note,int on) {
     input->held[note]=on;
     if(!on) return 0;
     input->order[note]=++input->serial;
-    if(note>=64 && note<68) { theme_preset(s,note-64); return 1; }
+    if(note==67) return 0; // Retired full-scene halftone pad stays unassigned.
+    if(note>=64 && note<67) { theme_preset(s,note-64); return 1; }
     if(note>=68 && note<72) { s->gear=note-68; return 0; }
     if(note>=72 && note<76) { s->motion_mode=note-72; return 0; }
     if(note>=76 && note<80) { space_preset(s,note-76); return 0; }
@@ -66,7 +67,7 @@ static inline int midi_action(Synth *s,MidiInput *input,int note,int on) {
     if(note==81) { s->hud_visible=!s->hud_visible; return 0; }
     if(note>=82 && note<=89) return 0;
     if(note>=56 && note<=60) { s->world_mode=note-56; return 0; }
-    if(note==61) { s->theme=(s->theme+1)%4; return 1; }
+    if(note==61) { s->theme=(s->theme+1)%THEME_COUNT; return 1; }
     if(note==62) { s->skin=(s->skin+1)%4; return 0; }
     if(note==63) { s->reflection=(s->reflection+1)%4; return 1; }
     if(note>=48 && note<=55) { space_preset(s,note-48); return 0; }
@@ -107,6 +108,7 @@ static inline void midi_leds(const Synth *s,const MidiInput *input,uint8_t leds[
     for(int n=0;n<90;n++) if(input->held[n]) leds[n]=(n==4||n==5)?5:3;
     for(int n=82;n<=89;n++) leds[n]=input->held[n]?1:0;
     leds[56+s->world_mode]=1;
+    leds[67]=0;
 }
 
 #ifdef HW_RVL

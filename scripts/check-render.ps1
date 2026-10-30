@@ -104,7 +104,7 @@ public static int NeonPixels(byte[] pixels) {
     if(($Gpu -or $Master) -and !$results[-1].gpuPass){throw 'GPU reference comparison failed or did not finish'}
     if($Worlds) {
         $seen=@($results | Group-Object world,theme)
-        if($seen.Count -ne 20){throw 'Not all 5 worlds x 4 themes were captured'}
+        if($seen.Count -ne 15){throw 'Not all 5 worlds x 3 themes were captured'}
         foreach($group in $seen) {
             if(@($group.Group.hash | Sort-Object -Unique).Count -lt 2){throw "World/theme $($group.Name) appears frozen"}
         }

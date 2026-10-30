@@ -2,7 +2,7 @@
 #include "../source/render_plan.h"
 int main(void) {
     Synth s; reset(&s);
-    for(int theme=0;theme<4;theme++) for(int world=0;world<5;world++)
+    for(int theme=0;theme<THEME_COUNT;theme++) for(int world=0;world<5;world++)
     for(int slow=0;slow<2;slow++) for(int pattern=0;pattern<8;pattern++) {
         s.theme=theme; s.world_mode=world; s.slow=slow; s.mask_pattern=pattern;
         s.draw.burst=s.tension=s.mask_env=0;

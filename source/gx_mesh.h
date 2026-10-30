@@ -55,7 +55,7 @@ static void mesh_init(void) {
     }
     immediate_format();
 }
-static int mesh_fast(void) { return gpu_mesh_enabled && !quantize_vertices && synth.theme!=3; }
+static int mesh_fast(void) { return gpu_mesh_enabled && !quantize_vertices; }
 static void list_draw(void *data,u32 bytes,Mtx model,Mtx rotation,int box_uv,u8 shade) {
     // Scalar concat avoids a NaN lane observed in the paired-single path with this build.
     Mtx mv,norm,uv,detail; c_guMtxConcat(view,model,mv); c_guMtxConcat(view,rotation,norm);
