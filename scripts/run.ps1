@@ -1,9 +1,22 @@
-param([string]$Dolphin = 'D:\Dolphin-x64\Dolphin.exe')
+param([string]$Dolphin = $env:DOLPHIN_PATH)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $dol = Join-Path $root 'apps/geezy/boot.dol'
 if (!(Test-Path $dol)) { throw 'Run scripts/build.ps1 first.' }
-if (!(Test-Path $Dolphin)) { throw "Dolphin not found: $Dolphin" }
+
+if ([string]::IsNullOrWhiteSpace($Dolphin)) {
+    $cmd = Get-Command Dolphin.exe -ErrorAction SilentlyContinue
+    $candidates = @(
+        $(if ($cmd) { $cmd.Source })
+        "$env:ProgramFiles\Dolphin-x64\Dolphin.exe"
+        "$env:LOCALAPPDATA\Programs\Dolphin-x64\Dolphin.exe"
+    ) + (Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'Dolphin-x64\Dolphin.exe' })
+    $Dolphin = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+if ([string]::IsNullOrWhiteSpace($Dolphin) -or !(Test-Path $Dolphin)) {
+    throw 'Dolphin.exe not found. Pass -Dolphin <path> or set DOLPHIN_PATH.'
+}
+
 # Use a project-local profile so the user's Dolphin settings are preserved.
 $profile = Join-Path $root '.dolphin-prototype'
 New-Item -ItemType Directory -Force "$profile/Config" | Out-Null

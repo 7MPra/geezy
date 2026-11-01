@@ -1,5 +1,15 @@
-param([string]$Dolphin='D:\Dolphin-x64\Dolphin.exe',[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[switch]$Master,[switch]$Profile,[ValidateRange(0,3)][int]$Beams=0)
+param([string]$Dolphin=$env:DOLPHIN_PATH,[switch]$Lattice,[switch]$Checker,[switch]$Sculptures,[switch]$Trail,[switch]$Graphics,[switch]$Stencil,[switch]$Worlds,[switch]$Gpu,[switch]$Master,[switch]$Profile,[ValidateRange(0,3)][int]$Beams=0)
 $ErrorActionPreference='Stop'
+if([string]::IsNullOrWhiteSpace($Dolphin)) {
+    $cmd=Get-Command Dolphin.exe -ErrorAction SilentlyContinue
+    $candidates=@(
+        $(if($cmd){$cmd.Source})
+        "$env:ProgramFiles\Dolphin-x64\Dolphin.exe"
+        "$env:LOCALAPPDATA\Programs\Dolphin-x64\Dolphin.exe"
+    )+(Get-PSDrive -PSProvider FileSystem | ForEach-Object { Join-Path $_.Root 'Dolphin-x64\Dolphin.exe' })
+    $Dolphin=$candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+if([string]::IsNullOrWhiteSpace($Dolphin) -or !(Test-Path $Dolphin)){throw 'Dolphin.exe not found. Pass -Dolphin <path> or set DOLPHIN_PATH.'}
 if((@($Lattice,$Checker,$Sculptures,$Trail,$Graphics,$Stencil,$Worlds,$Gpu,$Master) | Where-Object {$_}).Count -gt 1){throw 'Choose one diagnostic mode'}
 if($Profile -and ($Gpu -or $Master -or $Stencil -or $Checker -or $Trail -or $Lattice)){throw 'Profile requires the complete render path'}
 Push-Location (Split-Path $PSScriptRoot -Parent)

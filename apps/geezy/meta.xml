@@ -1,8 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <app version="1">
   <name>Geezy</name>
-  <coder>Geezy</coder>
+  <coder>7MPra</coder>
   <version>0.18.2</version>
-  <short_description>3D video synthesizer</short_description>
-  <long_description>Wii VJ synth. Sideways remote, Classic Controller and class-compliant USB-MIDI Note buttons. APC mini/MK2 top row: worlds 0-4, theme/skin/reflection cycles; other rows: backgrounds, sculpture presets, motion/gears, 16 harmony banks, 8 momentary graphics, steer/charge/hit/remix/HUD. Scene notes 82-89: hold blackout, whiteout, freeze/stage, mirror, kaleidoscope, invert, mosaic, strobe. Classic ZR+A/B/X/Y/Up/Right/Down/Left; remote 1+2+A freeze, 1+2+B kaleidoscope. 14 sculpture families, indirect liquid chrome/grid pulses and hybrid worlds. Dual upright controls: left B+Up/Right/Down/Left selects lattice/tunnel/dome/truss; left B+A graphics pattern. Right A hit/cut; arrows shape-only/palette/motion/layout; B+arrows kaleido/mirror/freeze/invert; B+A mosaic. Left 1 or 2 + right arrows selects beams or materials. Left B + right 1/2/Plus holds blackout/whiteout/strobe. Right 1/2 taps select world/theme on release. Both Minus reset. Single-remote chords below apply only with one remote. Twin shake remixes; held B enables wrist twist. MIDI CC ignored. Classic: stick steer, A charge, B graphics, X palette, Y scene, ZL theme, ZR harmony, Plus/Minus gear. Remote: A charge/strobe/release; B graphics; 1/2 palette/scene; arrows impulse/boost. 1+Plus HUD, 2+Plus theme, 1+Minus harmony bank. 2+Minus or Classic L+Y cycles worlds: orbit, horizon canyon, brutalist interior, point-cloud plexus, orthographic slicer. Four-color chrome, dark/white/fog worlds; full-scene halftone theme removed, APC note 67 disabled, layered graphics and Z-buffer stencil windows. Plus+Minus reset; HOME exit. No sensor bar required.</long_description>
+  <short_description>Real-time 3D video synthesizer</short_description>
+  <long_description>Real-time 3D video synthesizer and VJ instrument for Wii.
+
+Supports sideways Wii Remote, dual Wii Remotes, Classic Controller, and class-compliant USB-MIDI pad controllers (Akai APC mini / MK2).
+
+Features 5 selectable 3D worlds, 14 procedural sculpture families, 3 visual themes, 16 color palette banks, 8 momentary 2D graphic overlays, and hold-type master post-FX.
+
+Controls (1 Wiimote sideways):
+- A (hold): Charge &amp; strobe / release drop
+- B (hold): 2D graphic overlay (next pattern per press)
+- 1 / 2: New palette / new sculpture &amp; motion
+- D-Pad: Impulse &amp; boost steering (B + D-Pad: camera aim)
+- + / -: Speed gear
+- 2 + - / 2 + +: Cycle world / cycle theme
+- 1 + -: Cycle palette bank
+- 1 + +: Toggle HUD
+- 1 + 2: Full remix (1 + 2 + A/B: Freeze / Kaleidoscope)
+- + and -: Reset / HOME: Exit
+
+No sensor bar required.</long_description>
 </app>
