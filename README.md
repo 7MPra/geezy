@@ -3,7 +3,16 @@
 Nintendo Wii（Homebrew）用のリアルタイム3Dビデオシンセ／VJツールです。  
 Wiiリモコン、クラシックコントローラ、USB-MIDIパッド（Akai APC mini / MK2）に対応しています。センサーバーや音声入力は使いません。
 
-## ビルド・起動
+## 導入・ビルド
+
+### ダウンロードして動かす
+
+[Releases](https://github.com/7MPra/geezy/releases) からビルド済みファイルをダウンロードできます。
+
+- **Wii実機**：`.zip` を展開して `apps/geezy` フォルダをSDカード直下にコピーし、Homebrew Channel から起動します。
+- **Dolphin**：`geezy.dol`（または `.zip` 内の `apps/geezy/boot.dol`）を Dolphin で直接開いて起動できます。
+
+### ソースからビルドする
 
 ビルドには Docker（`devkitpro/devkitppc`）を使います。ローカルに devkitPPC 環境がある場合は `make` でもビルドできます。
 
@@ -16,8 +25,7 @@ Wiiリモコン、クラシックコントローラ、USB-MIDIパッド（Akai A
 ./scripts/run.ps1 -Dolphin "C:\path\to\Dolphin.exe"
 ```
 
-- `Dolphin.exe` の場所は環境変数 `DOLPHIN_PATH` または `-Dolphin` 引数でも指定できます。`run.ps1` はプロジェクト直下の `.dolphin-prototype` をプロファイルとして使うため、普段の Dolphin 設定には影響しません。
-- **Wii実機で動かす場合**：ビルド後に生成される `apps/geezy/boot.dol` と同梱の `apps/geezy/meta.xml` をSDカードの `apps/geezy/` にコピーし、Homebrew Channel から起動します。
+`Dolphin.exe` の場所は環境変数 `DOLPHIN_PATH` または `-Dolphin` 引数でも指定できます。`run.ps1` はプロジェクト直下の `.dolphin-prototype` をプロファイルとして使うため、普段の Dolphin 設定には影響しません。
 
 ## 画面構成
 
